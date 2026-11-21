@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mind</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/favicon.png" />
+  <meta name="theme-color" content="#fafaf7" />
+  <link rel="stylesheet" href="/src/map/style.css" />
+</head>
+<body>
+  <svg id="map" xmlns="http://www.w3.org/2000/svg"><g id="vp"><g id="flip"><g id="edges"></g><g id="nodes"></g></g></g></svg>
+  <div id="pop" hidden></div>
+  <div id="hud"><a href="#" id="rules-btn" title="Update prompt and work instructions of all bots">Rules</a></div>
+  <section id="rules" hidden></section>
+  <section id="cockpit" hidden></section>
+  <section id="reader" hidden></section>
+  <div id="note" hidden></div>
+  <div id="rotor" title="Rotate circle: drag the slider or scroll over it · double-click = reset · on the map: ⌥ + drag"><input type="range" id="rot-slider" min="0" max="360" step="0.5" value="0" /></div>
+  <a href="#" id="plane-btn"></a>
+  <div id="conn" hidden>No connection to the app server – please start <b>Mind</b> on the desktop. Input will be sent afterwards.</div>
+  <script type="module" src="/src/map/main.ts"></script>
+</body>
+</html>
