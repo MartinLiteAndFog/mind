@@ -501,7 +501,7 @@ const OPTIONS = (): Opt[] => {
   ];
 };
 let modelMenu: false | 'set' | 'add' = false;
-let nodeMenu: null | 'menu' | 'archive' | 'link' | 'instr' | 'uprompt' | 'reich' = null;
+let nodeMenu: null | 'menu' | 'archive' | 'link' | 'instr' | 'uprompt' | 'reich' | 'share' = null;
 let replyKey: string | null = null;
 let chatPend: { key: string; nodeId: string; threadId: string; readonly: boolean }[] = [];
 const optOf = (m: { runtime: string; model: string }) => OPTIONS().find((o) => o.runtime === m.runtime && (o.model === m.model || (m.runtime === 'chat' && !m.model && o.model === 'claude-desktop')));
@@ -767,7 +767,7 @@ function nodeMenuHtml(id: string, isBot: boolean) {
     <div class="opt" data-a="child">${tr('Unterknoten anlegen', 'Create sub-node')}</div>
     ${kids ? `<div class="opt" data-a="fold">${collapsed.has(id) ? tr('Unterknoten zeigen', 'Show sub-nodes') : tr('Unterknoten einklappen', 'Collapse sub-nodes')}</div>` : ''}
     ${isBot ? `<div class="opt" data-a="instr">${tr('Arbeitsanweisung (≡)', 'Work instruction (≡)')}</div>` : ''}
-    ${id === OWNER_ID ? '' : nodeById(S(), id)?.remote ? `<div class="opt" data-a="leave">${tr('Gespiegelten Ast verlassen', 'Leave mirrored branch')}</div>` : `<div class="opt" data-a="share">${nodeById(S(), id)?.sharedAs ? tr('Geteilt ✓ · neue Einladung', 'Shared ✓ · new invitation') : tr('Ast mit anderem Mind teilen …', 'Share branch with another Mind …')}</div>${nodeById(S(), id)?.sharedAs ? `<div class="opt" data-a="unshare">${tr('Teilen beenden', 'Stop sharing')}</div>` : ''}`}
+    ${id === OWNER_ID ? '' : nodeById(S(), id)?.remote ? `<div class="opt" data-a="leave">${tr('Gespiegelten Ast verlassen', 'Leave mirrored branch')}</div>` : `<div class="opt" data-a="sharewith">${nodeById(S(), id)?.sharedAs ? tr('Geteilt ✓ · Teilen mit …', 'Shared ✓ · Share with …') : tr('Teilen mit …', 'Share with …')}</div>`}
     <div class="opt" data-a="reich">${tr('Reich · Arbeitsordner · privat', 'Realm · work folders · private')}${nodeById(S(), id)?.private ? ' 🔒' : ''}</div>
     <div class="opt" data-a="ctx">${tr('Kontext kopieren · im Chat weitermachen', 'Copy context · continue in chat')}</div>
     ${$('pop').classList.contains('sized') ? `<div class="opt" data-a="popreset">${tr('Fenstergröße zurücksetzen', 'Reset window size')}</div>` : ''}
@@ -784,6 +784,17 @@ function nodeMenuHtml(id: string, isBot: boolean) {
       <div class="grp">${tr('Arbeitsordner – gelten für den ganzen Ast, einer pro Zeile', 'Work folders – apply to the whole branch, one per line')}</div><textarea id="reich-dirs" style="min-height:70px" placeholder="~/Projects/my-app">${esc((n.workDirs ?? []).join('\n'))}</textarea>
       <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="reich-priv" ${n.private ? 'checked' : ''}> ${tr('privat – Bots außerhalb dieses Asts sehen und lesen ihn nicht', 'private – bots outside this branch cannot see or read it')}</label>
       <div class="row"><span class="sp"></span><button data-a="reich-save">${tr('Speichern', 'Save')}</button></div></div>`;
+  }
+  if (nodeMenu === 'share') {
+    const n = nodeById(S(), id)!;
+    const sh = shareInfo?.shares.find((x) => x.own && x.rootId === id);
+    const list = shareInfo ? (shareInfo.contacts.length ? shareInfo.contacts.map((c) => `<label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" data-sharewith="${esc(c.id)}" ${sh?.memberIds?.includes(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="hint">${c.online ? '● online' : 'offline'}</span></label>`).join('')
+      : `<div class="hint">${tr('Noch keine Verbindungen. Lade jemanden ein:', 'No connections yet. Invite someone:')}</div>`) : `<div class="hint">${shareErr ? esc(shareErr) : tr('Lädt …', 'Loading …')}</div>`;
+    return `<div class="form"><div class="grp">${tr(`„${esc(n.title)}“ teilen mit`, `Share "${esc(n.title)}" with`)}</div>${list}
+      ${shareInfo?.contacts.length ? `<div class="row"><span class="sp"></span><button data-a="sharewith-save">${tr('Speichern', 'Save')}</button></div>` : ''}
+      <div class="grp">${tr('Neue Person', 'New person')}</div><div class="hint">${tr('Erzeugt einen Link (einmalig, 7 Tage). Wer ihn in seinem Mind unter Regeln → Hub einfügt, ist mit dir verbunden und erscheint hier.', 'Creates a link (single use, 7 days). Whoever pastes it in their Mind under Rules → Hub is connected with you and appears here.')}</div>
+      ${linkOut ? `<div class="row"><input id="link-out" readonly value="${esc(linkOut)}"><button data-a="link-copy">${tr('Kopieren', 'Copy')}</button></div>` : `<div class="row"><button data-a="connect-link">${tr('Verbindungslink erzeugen', 'Create connection link')}</button></div>`}
+      <div class="hint">${tr('Private Unteräste werden nie geteilt. Die andere Seite sieht den Ast nur lesend und kann deinen Bot fragen.', 'Private sub-branches are never shared. The other side sees the branch read-only and can ask your bot.')}</div></div>`;
   }
   if (nodeMenu === 'uprompt') return `<div class="form"><div class="hint">${tr('Gilt für ↻ an allen Bots.', 'Applies to ↻ on all bots.')}</div><textarea id="uprompt-text" style="min-height:180px">${esc(S().updatePrompt ?? defaultUpdatePrompt())}</textarea><div class="row"><span class="hint" data-a="uprompt-reset" style="cursor:pointer">${tr('Standard wiederherstellen', 'Restore default')}</span><span class="sp"></span><button data-a="uprompt-save">${tr('Speichern', 'Save')}</button></div></div>`;
   if (nodeMenu === 'archive') return `<div class="form"><textarea id="arch-text" placeholder="${tr('Chat-Auszug einfügen', 'Paste chat excerpt')}"></textarea><div class="row"><input id="arch-link" placeholder="${tr('Link zum Chat (optional)', 'Link to the chat (optional)')}"><button data-a="arch-save">${tr('Archivieren', 'Archive')}</button></div></div>`;
@@ -1255,26 +1266,38 @@ function connHtml() {
       : `<div class="mut">${conn.error ? esc(conn.error) : tr('Tunnel startet … (einige Sekunden)', 'Tunnel starting … (a few seconds)')}</div>`) : `<div class="mut">${tr('Aus: Mind ist nur auf diesem Mac erreichbar.', 'Off: Mind is only reachable on this Mac.')}</div>`}`;
 }
 
+let shareInfo: { contacts: { id: string; name: string; online: boolean }[]; shares: { id: string; rootId: string; own: boolean; memberIds?: string[] }[] } | null = null;
+let shareErr = '';
+let linkOut = '';
 let hub: { configured: boolean; enabled: boolean; url: string; connected: boolean; error: string; mcpUrl: string; shares: { id: string; title: string; own: boolean; owner: string; members: string[]; ownerOnline: boolean }[] } | null = null;
 function hubHtml() {
   const h = hub;
   const head = `<div class="rlabel">${tr('Hub', 'Hub')} <span>${tr('– verbindet Mind mit dem Internet (Connector ohne Tunnel) und mit anderen Minds (geteilte Äste)', '– connects Mind to the internet (connector without tunnel) and to other Minds (shared branches)')}</span></div>`;
   if (!h) return `${head}<div class="mut">${tr('Wird geladen …', 'Loading …')}</div>`;
-  const join = `<div class="rrow"><input id="r-join" placeholder="${tr('Einladung einfügen (https://…#CODE)', 'Paste invitation (https://…#CODE)')}"><button data-r="hub-join">${tr('Beitreten', 'Join')}</button></div>`;
+  const join = `<div class="rrow"><input id="r-join" placeholder="${tr('Link von einem anderen Mind einfügen (https://…#…)', 'Paste a link from another Mind (https://…#…)')}"><button data-r="hub-join">${tr('Annehmen', 'Accept')}</button></div>`;
   if (!h.configured || !h.enabled) return `${head}<div class="rrow"><input id="r-hub-url" placeholder="https://…up.railway.app" value="${esc(h.url)}"><input id="r-hub-key" type="password" placeholder="${tr('Hub-Schlüssel', 'Hub key')}"><button data-r="hub-save">${tr('Verbinden', 'Connect')}</button></div>
     <div class="mut">${tr('Oder mit einer Einladung beitreten – dann braucht es keinen Hub-Schlüssel:', 'Or join with an invitation – then no hub key is needed:')}</div>${join}`;
   const shares = h.shares.length ? h.shares.map((x) => `<div class="rrow"><b>${esc(x.title)}</b><span class="mut">${x.own ? tr(`geteilt mit ${esc(x.members.join(', ') || 'noch niemandem')}`, `shared with ${esc(x.members.join(', ') || 'nobody yet')}`) : tr(`von ${esc(x.owner)}${x.ownerOnline ? '' : ' · offline'}`, `from ${esc(x.owner)}${x.ownerOnline ? '' : ' · offline'}`)}</span></div>`).join('') : `<div class="mut">${tr('Noch keine geteilten Äste. Teilen: ⋯ im Knotenfenster → „Ast mit anderem Mind teilen“.', 'No shared branches yet. To share: ⋯ in the node window → "Share branch with another Mind".')}</div>`;
   return `${head}<div class="mut">${esc(h.url)} · ${h.connected ? tr('verbunden ✓', 'connected ✓') : tr('nicht verbunden', 'not connected')}${h.error ? ` · ${esc(h.error)}` : ''}</div>
     <div class="rrow"><input id="r-hub-mcp" readonly value="${esc(h.mcpUrl)}"><b class="lnk" data-r="hub-copy">${tr('Connector-Adresse kopieren', 'Copy connector address')}</b></div>
     <div class="mut">${tr('Diese Adresse in Claude bzw. ChatGPT als Connector eintragen (statt der Tunnel-Adresse). Sie bleibt gleich, solange der Hub läuft.', 'Enter this address as the connector in Claude or ChatGPT (instead of the tunnel address). It stays the same as long as the hub runs.')}</div>
-    ${shares}${join}`;
+    <div class="rlabel" style="margin-top:10px">${tr('Verbindungen', 'Connections')}</div>
+    <div id="r-contacts" class="mut">${hubContacts ? (hubContacts.length ? hubContacts.map((c) => `${esc(c.name)} ${c.online ? '●' : '○'}`).join(' · ') : tr('noch keine', 'none yet')) : '…'}</div>
+    <div class="rrow"><button data-r="hub-connect">${tr('Mind verbinden – Link erzeugen', 'Connect a Mind – create link')}</button>${hubLink ? `<input id="r-link" readonly value="${esc(hubLink)}">` : ''}</div>
+    ${join}
+    <div class="rlabel" style="margin-top:10px">${tr('Geteilte Äste', 'Shared branches')}</div>${shares}`;
 }
+let hubContacts: { id: string; name: string; online: boolean }[] | null = null;
+let hubLink = '';
 async function loadHub() {
   try { hub = await (await fetch('/api/hub')).json(); } catch { hub = null; }
+  if (hub?.enabled) { try { hubContacts = (await (await fetch('/api/hub/contacts')).json()).contacts ?? []; } catch { hubContacts = null; } }
   const el = document.getElementById('r-hub'); if (el) el.innerHTML = hubHtml();
 }
+let lastMirrorSync = 0;
 function mirrorHtml(n: GraphNode) {
   const r = n.remote!;
+  if (Date.now() - lastMirrorSync > 15_000) { lastMirrorSync = Date.now(); fetch('/api/hub/sync', { method: 'POST' }).catch(() => {}); }
   const files = r.files?.length ? `<div class="mut">${tr('Dateien dort', 'Files there')}: ${r.files.slice(0, 12).map(esc).join(', ')}</div>` : '';
   const msgs = r.msgs?.length ? `<div class="mut" style="margin-top:4px">${r.msgs.slice(-3).map((m) => `<div><b>${esc(m.from)}:</b> ${esc(m.text.slice(0, 220))}</div>`).join('')}</div>` : '';
   return `<div class="mirror"><b>${tr(`Gespiegelt aus dem Mind von ${esc(r.origin)}`, `Mirrored from ${esc(r.origin)}'s Mind`)}</b> · ${tr('Stand', 'as of')} ${esc(new Date(r.at).toLocaleString(LOC(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}${r.online ? '' : ` · ${tr('gerade offline', 'offline right now')}`}<div class="mut">${tr(`Nur lesen. Deine Nachricht unten geht an den Bot bei ${esc(r.origin)}.`, `Read only. Your message below goes to the bot at ${esc(r.origin)}.`)}</div>${files}${msgs}</div>`;
@@ -1396,13 +1419,19 @@ $('rules').addEventListener('click', async (ev) => {
       break;
     }
     case 'conn-restart': { conn = await (await fetch('/api/connector', { method: 'PUT', body: JSON.stringify({ restart: true }) })).json(); const el = document.getElementById('r-conn'); if (el) el.innerHTML = connHtml(); note(tr('Tunnel startet neu – neue Adresse in ein paar Sekunden.', 'Tunnel restarting – new address in a few seconds.')); setTimeout(loadConn, 4000); break; }
+    case 'hub-connect': {
+      const txt = await dgText({ cmd: 'connect', args: [], as: OWNER_ID, mandate: OWNER_ID });
+      const m = txt.match(/https?:\/\/\S+#\S+/); hubLink = m ? m[0] : '';
+      if (m) copy(m[0], tr('Link kopiert – an die andere Person schicken.', 'Link copied – send it to the other person.')); else note(txt.trim());
+      const el = document.getElementById('r-hub'); if (el) el.innerHTML = hubHtml(); break;
+    }
     case 'hub-copy': copy(($('r-hub-mcp') as HTMLInputElement).value, tr('Connector-Adresse kopiert.', 'Connector address copied.')); break;
     case 'hub-save': case 'hub-join': {
       const body = t.dataset.r === 'hub-save'
         ? { cmd: 'hub', args: [($('r-hub-url') as HTMLInputElement).value.trim(), ($('r-hub-key') as HTMLInputElement).value.trim()].filter(Boolean) }
         : { cmd: 'join', args: [($('r-join') as HTMLInputElement).value.trim()] };
       if (!body.args[0]) { note(tr('Erst ausfüllen.', 'Fill it in first.')); break; }
-      note((await dgText({ ...body, as: OWNER_ID })).trim());
+      note((await dgText({ ...body, as: OWNER_ID, mandate: OWNER_ID })).trim());
       await loadHub(); await refresh(true); break;
     }
     case 'conn-fixed': case 'conn-unfix': {
@@ -1736,10 +1765,25 @@ $('pop').addEventListener('click', async (ev) => {
     nodeMenu = null;
     note(tr('Alter Chat archiviert. ↗ öffnet jetzt einen neuen Chat, der sich Stand und Verlauf über den Connector holt.', 'Old chat archived. ↗ now opens a new chat that fetches state and history via the connector.'));
     commit(false);
+  } else if (a === 'sharewith' && sel.kind === 'node') {
+    modelMenu = false; nodeMenu = 'share'; linkOut = ''; shareInfo = null; shareErr = ''; renderPop();
+    try { const r = await (await fetch('/api/hub/contacts')).json(); shareInfo = r; shareErr = r.error ?? ''; if (r.error) shareInfo = null; } catch { shareErr = tr('Hub nicht erreichbar.', 'Hub not reachable.'); }
+    if (!hub?.enabled && !shareInfo) shareErr = tr('Erst unter Regeln → Hub einen Hub verbinden.', 'Connect a hub first under Rules → Hub.');
+    renderPop();
+  } else if (a === 'sharewith-save' && sel.kind === 'node') {
+    const ids = [...document.querySelectorAll<HTMLInputElement>('#pop [data-sharewith]')].filter((x) => x.checked).map((x) => x.dataset.sharewith!);
+    note((await dgText({ cmd: 'share-with', args: [sel.id, ...ids], as: OWNER_ID, mandate: OWNER_ID })).trim());
+    nodeMenu = null; return refresh(true);
+  } else if (a === 'connect-link') {
+    const txt = await dgText({ cmd: 'connect', args: [], as: OWNER_ID, mandate: OWNER_ID });
+    const m = txt.match(/https?:\/\/\S+#\S+/); linkOut = m ? m[0] : ''; if (!m) note(txt.trim());
+    if (m) copy(m[0], tr('Link kopiert – an die andere Person schicken.', 'Link copied – send it to the other person.'));
+    renderPop(); const r2 = document.getElementById('r-link'); if (r2) loadHub();
+  } else if (a === 'link-copy') { copy(linkOut, tr('Link kopiert.', 'Link copied.'));
   } else if ((a === 'share' || a === 'unshare' || a === 'leave') && sel.kind === 'node') {
     nodeMenu = null; renderPop();
     if (a === 'unshare' && !confirm(tr('Teilen beenden? Die andere Seite verliert den Spiegel.', 'Stop sharing? The other side loses the mirror.'))) return;
-    const txt = await dgText({ cmd: a, args: [sel.id], as: OWNER_ID });
+    const txt = await dgText({ cmd: a, args: [sel.id], as: OWNER_ID, mandate: OWNER_ID });
     if (a === 'share' && /#/.test(txt)) { const inv = txt.trim().split('\n').pop()!; copy(inv, tr('Einladung kopiert – an die andere Person schicken.', 'Invitation copied – send it to the other person.')); }
     else note(txt.trim());
     return refresh(true);

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync, renameSync } from 'node:fs';
 import { readState, writeState, storeSourceFile, safeDataPath, writeTask, listReports, DATA_DIR } from './store.ts';
-import { startHub, hubStatus, setHub } from './hub.ts';
+import { startHub, hubStatus, setHub, contacts, syncShares } from './hub.ts';
 import { NODES_DIR, startRun, dgCommand, runs, setApiBase, ensureBin, ensureTestBot, restoreInbox, chatPending, cancelRun, newSection, updateBot, discardPending, listNodeFiles, readNodeFile, nodeFilePath, okCascade, blockerSweep, fillOk, queued, autoStatus, setAuto, autoActive } from './bots.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { synth, publicTts, saveTts } from './tts.ts';
@@ -89,6 +89,10 @@ export const handler = async (req: IncomingMessage, res: ServerResponse, next: (
       return send(res, 200, r);
     }
     if (url.pathname === '/api/hub' && req.method === 'GET') return send(res, 200, hubStatus());
+    if (url.pathname === '/api/hub/contacts' && req.method === 'GET') {
+      try { return send(res, 200, { contacts: await contacts(), shares: hubStatus().shares }); } catch (e) { return send(res, 200, { contacts: [], shares: [], error: (e as Error).message }); }
+    }
+    if (url.pathname === '/api/hub/sync' && req.method === 'POST') { try { await syncShares(); } catch { /* offline */ } return send(res, 200, { ok: true }); }
     if (url.pathname === '/api/hub' && req.method === 'PUT') {
       const b = JSON.parse((await body(req)).toString('utf8'));
       try { return send(res, 200, await setHub(String(b.url ?? ''), String(b.key ?? ''), b.enabled !== false)); } catch (e) { return send(res, 400, { error: (e as Error).message }); }

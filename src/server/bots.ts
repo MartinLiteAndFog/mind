@@ -1,6 +1,6 @@
 // Bot runtime: runs a node bot as a local agent process (claude / codex / test).
 // Bots work in data/nodes/<id>/ (own CLAUDE.md / AGENTS.md) and change the graph only via `dg`.
-import { askRemote, shareBranch, unshareBranch, joinShare, leaveShare, hubStatus, setHub, syncShares } from './hub.ts';
+import { askRemote, shareBranch, unshareBranch, leaveShare, hubStatus, setHub, syncShares, connectLink, contacts, removeContact, acceptLink, shareWith } from './hub.ts';
 import { OWNER_ID, OWNER_ALIASES, ownerIdOf, isOwnerId, tr, OWNER } from '../core/i18n.ts';
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, readFileSync, chmodSync, rmSync, readdirSync, statSync, realpathSync } from 'node:fs';
@@ -827,7 +827,7 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
       }
       return { code: 200, text: mutate((s) => { s.setup = { done: true, at: now() }; return tr('ok: Einrichtung abgeschlossen', 'ok: setup complete'); }) };
     }
-    case 'hub': case 'share': case 'unshare': case 'join': case 'leave': case 'shares': {
+    case 'hub': case 'share': case 'unshare': case 'join': case 'leave': case 'shares': case 'connect': case 'contacts': case 'share-with': case 'disconnect': {
       // Cooperation between Minds through the hub (owner only)
       if (!mandate) return { code: 403, text: tr('dg: nur der Besitzer (--as owner).', 'dg: owner only (--as owner).') };
       try {
@@ -836,13 +836,17 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
           const st = hubStatus();
           return { code: 200, text: st.configured ? `${st.url} · ${st.connected ? tr('verbunden', 'connected') : tr('nicht verbunden', 'not connected')}${st.error ? ` (${st.error})` : ''}\nConnector: ${st.mcpUrl}` : tr('Kein Hub. dg hub <url> [hub-key]', 'No hub. dg hub <url> [hub-key]') };
         }
+        if (cmd === 'connect') { const r = await connectLink(); return { code: 200, text: tr(`Verbindungslink (einmalig, 7 Tage) – an die andere Person schicken, sie fügt ihn in ihrem Mind unter Regeln → Hub ein:\n${r.link}`, `Connection link (single use, 7 days) – send it to the other person, they paste it in their Mind under Rules → Hub:\n${r.link}`) }; }
+        if (cmd === 'contacts') { const l = await contacts(); return { code: 200, text: l.map((x) => `- ${x.name} (\`${x.id}\`)${x.online ? ' · online' : ''}`).join('\n') || tr('Noch keine Verbindungen. dg connect', 'No connections yet. dg connect') }; }
+        if (cmd === 'disconnect') { if (!args[0]) return { code: 400, text: 'dg disconnect <mind-id>' }; await removeContact(args[0]); return { code: 200, text: 'ok' }; }
+        if (cmd === 'share-with') { const [id, ...who] = args; if (!id) return { code: 400, text: 'dg share-with <knoten> <mind-id …>' }; await shareWith(id, who); return { code: 200, text: who.length ? tr(`ok: „${nodeById(s0, id)?.title}“ geteilt mit ${who.length} Verbindung(en)`, `ok: "${nodeById(s0, id)?.title}" shared with ${who.length} connection(s)`) : tr('ok: nicht mehr geteilt', 'ok: no longer shared') }; }
         if (cmd === 'share') { const id = args[0] ?? target; const r = await shareBranch(id); const inv = `${hubStatus().url.replace(/\/+$/, '')}#${r.code}`; return { code: 200, text: tr(`ok: „${nodeById(s0, id)?.title}“ ist geteilt. Einladung (einmalig, 7 Tage) – an die andere Person schicken, sie gibt sie in ihrem Mind ein:\n${inv}`, `ok: "${nodeById(s0, id)?.title}" is shared. Invitation (single use, 7 days) – send it to the other person, they enter it in their Mind:\n${inv}`) }; }
         if (cmd === 'unshare') { await unshareBranch(args[0] ?? target); return { code: 200, text: tr('ok: nicht mehr geteilt', 'ok: no longer shared') }; }
         if (cmd === 'join') {
-          const [u, c] = (args[0] ?? '').includes('#') ? args[0].split('#') : [args[1] ?? '', args[0] ?? ''];
-          if (!c) return { code: 400, text: tr('dg join <hub-url#code>', 'dg join <hub-url#code>') };
-          if (u && hubStatus().url !== u) await setHub(u, '', false);
-          const sh = await joinShare(c); return { code: 200, text: tr(`ok: „${sh.title}“ von ${sh.owner} erscheint jetzt in deiner Karte.`, `ok: "${sh.title}" from ${sh.owner} now appears in your map.`) }; }
+          if (!args[0]) return { code: 400, text: 'dg join <link>' };
+          const r = await acceptLink(args.join(''));
+          return { code: 200, text: r.peer ? tr(`ok: verbunden mit ${r.peer.name}. Ihr könnt jetzt Äste miteinander teilen (⋯ → Teilen mit …).`, `ok: connected with ${r.peer.name}. You can now share branches with each other (⋯ → Share with …).`) : tr(`ok: „${r.share!.title}“ von ${r.share!.owner} erscheint jetzt in deiner Karte.`, `ok: "${r.share!.title}" from ${r.share!.owner} now appears in your map.`) };
+        }
         if (cmd === 'leave') { const n = nodeById(s0, args[0] ?? target); if (!n?.remote) return { code: 400, text: tr('dg leave <gespiegelter-knoten>', 'dg leave <mirrored-node>') }; await leaveShare(n.remote.share); return { code: 200, text: 'ok' }; }
         await syncShares();
         const st = hubStatus() as { shares: { title: string; own: boolean; owner: string; members: string[]; ownerOnline: boolean }[] };
@@ -885,13 +889,13 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
       const r = await startRun({ nodeId: to, text: q, from: actor, threadId: body.thread, edgeId: null, depth: body.depth + 1, via: 'bot' }, true);
       return { code: r.status === 'fertig' ? 200 : 500, text: r.reply ?? r.error ?? '' };
     }
-    default: return { code: 400, text: tr(`dg: unbekannter Befehl ${cmd}. Befehle: hub share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`, `dg: unknown command ${cmd}. Commands: hub share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`) };
+    default: return { code: 400, text: tr(`dg: unbekannter Befehl ${cmd}. Befehle: hub connect contacts disconnect share-with share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`, `dg: unknown command ${cmd}. Commands: hub connect contacts disconnect share-with share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`) };
   }
 }
 
 // ───────── Runs ─────────
 
-function addMessage(m: Omit<BotMessage, 'id' | 'at'>) {
+export function addMessage(m: Omit<BotMessage, 'id' | 'at'>) {
   mutate((s) => { s.botMessages.push({ ...m, id: rid('msg'), at: now() }); });
 }
 
@@ -1093,13 +1097,15 @@ function spawnRuntimeInner(rt: Runtime, model: string, cwd: string, prompt: stri
 function remoteRun(a: { nodeId: string; text: string; from: string; threadId?: string | null; edgeId: string | null; depth: number; via: BotMessage['via']; about?: string | null }, origin: string, wait: boolean): Promise<RunInfo> {
   const info: RunInfo = { id: rid('run'), nodeId: a.nodeId, from: a.from, threadId: a.threadId || rid('thr'), edgeId: a.edgeId, depth: a.depth, status: 'läuft', runtime: 'chat', model: tr(`Mind von ${origin}`, `${origin}'s Mind`), startedAt: now(), steps: [] };
   runs.set(info.id, info);
-  addMessage({ threadId: info.threadId, from: a.from, to: a.nodeId, text: a.text, edgeId: a.edgeId, runId: info.id, kind: 'frage', via: a.via, about: a.about ?? null });
+  addMessage({ threadId: info.threadId, from: a.from, to: a.nodeId, text: a.text, edgeId: a.edgeId, runId: info.id, kind: 'frage', via: a.via, about: a.nodeId });
   const done = askRemote(a.nodeId, a.text, () => info.steps.push({ at: now(), text: tr(`${origin}s Mind ist gerade offline – die Frage wartet beim Hub.`, `${origin}'s Mind is offline right now – the question waits at the hub.`) }))
-    .then((r) => { info.status = 'fertig'; info.reply = r || tr('(keine Antwort)', '(no answer)'); })
+    .then((r) => { info.status = 'fertig'; info.reply = r ?? ''; })
     .catch((e: Error) => { info.status = 'fehlgeschlagen'; info.error = e.message; })
     .finally(() => {
       info.endedAt = now();
-      addMessage({ threadId: info.threadId, from: a.nodeId, to: a.from, text: info.reply ?? tr(`Fehler: ${info.error}`, `Error: ${info.error}`), edgeId: a.edgeId, runId: info.id, kind: info.status === 'fertig' ? 'antwort' : 'fehler', via: 'bot', runtime: info.model });
+      // no answer within 30 min: it is recorded later, whenever the other Mind answers
+      if (info.status === 'fertig' && !info.reply) { info.reply = tr(`Die Antwort von ${origin} kommt nach – sie erscheint hier, sobald sein Mind geantwortet hat.`, `The answer from ${origin} will follow – it appears here once their Mind has answered.`); return; }
+      addMessage({ threadId: info.threadId, from: a.nodeId, to: a.from, text: info.reply ?? tr(`Fehler: ${info.error}`, `Error: ${info.error}`), edgeId: a.edgeId, runId: info.id, kind: info.status === 'fertig' ? 'antwort' : 'fehler', via: 'bot', runtime: info.model, about: a.nodeId });
     });
   return wait ? done.then(() => info) : Promise.resolve(info);
 }

@@ -10,9 +10,10 @@ import { nodeById, descendants, children } from '../core/graph.ts';
 import { OWNER_ID, OWNER, tr } from '../core/i18n.ts';
 import type { GraphState, GraphNode } from '../core/model.ts';
 import { readSecrets, writeSecrets, connectorToken, handleMcp } from './mcp.ts';
-import { mutate, startRun, listNodeFiles, hiddenFor } from './bots.ts';
+import { mutate, startRun, listNodeFiles, hiddenFor, addMessage } from './bots.ts';
 
-type HubCfg = { url: string; key?: string; mindId: string; secret: string; enabled: boolean; owned?: Record<string, string> };
+type HubCfg = { url: string; key?: string; mindId: string; secret: string; enabled: boolean; owned?: Record<string, string>; done?: string[] };
+type Mail = { id: string; from: string; fromName: string; kind: 'ask' | 'answer'; share: string; nodeId: string; text: string; replyTo: string | null; ref: string | null; at: string };
 type Remote = NonNullable<GraphNode['remote']>;
 
 const G = globalThis as unknown as { __mindHub?: { gen: number; ok: boolean; err: string; lastPoll: string; shares: unknown[] } };
@@ -82,6 +83,7 @@ export function startHub() {
         const j = await api('/v1/poll', { timeoutMs: 40_000 });
         H.ok = true; H.err = ''; H.lastPoll = new Date().toISOString();
         for (const job of j.jobs ?? []) void handleJob(job);
+        for (const m of (j.mail ?? []) as Mail[]) void handleMail(m);
       } catch (e) {
         H.ok = false; H.err = String((e as Error).message ?? e);
         await new Promise((r) => setTimeout(r, 5000));
@@ -97,12 +99,37 @@ async function done(id: string, result: unknown) {
   try { await api('/v1/done', { json: { id, result } }); } catch { /* hub restarted – the caller times out */ }
 }
 
-async function handleJob(job: { id: string; kind: string; msg?: unknown; share?: string; nodeId?: string; text?: string; from?: string }) {
+async function handleJob(job: { id: string; kind: string; msg?: unknown }) {
   if (job.kind === 'mcp') return done(job.id, await handleMcp(job.msg));
-  if (job.kind === 'ask') {
-    try { return done(job.id, { reply: await answerPartner(job.share!, job.nodeId!, job.text!, job.from ?? 'Partner') }); }
-    catch (e) { return done(job.id, { error: String((e as Error).message ?? e) }); }
-  }
+  if (job.kind === 'sync') return syncShares().catch(() => {});
+}
+
+// ───────── durable mail between Minds ─────────
+const busy = new Set<string>();
+const pendingAsks = new Map<string, (text: string) => void>(); // ref -> resolver of a waiting remoteRun
+const ack = (ids: string[]) => api('/v1/ack', { json: { ids } }).catch(() => {});
+function markDone(id: string) { const d = [...(cfg()?.done ?? []), id].slice(-300); saveCfg({ done: d }); }
+
+async function handleMail(m: Mail) {
+  if (busy.has(m.id)) return; // still working on it; the hub offers it again later
+  if (cfg()?.done?.includes(m.id)) return ack([m.id]);
+  busy.add(m.id);
+  try {
+    if (m.kind === 'ask') {
+      let reply: string;
+      try { reply = await answerPartner(m.share, m.nodeId, m.text, m.fromName); } catch (e) { reply = tr(`Fehler: ${(e as Error).message}`, `Error: ${(e as Error).message}`); }
+      await api('/v1/mail', { json: { kind: 'answer', to: m.from, share: m.share, nodeId: m.nodeId, text: reply, replyTo: m.id, ref: m.ref } });
+    } else {
+      const wait = m.ref ? pendingAsks.get(m.ref) : undefined;
+      if (wait) { pendingAsks.delete(m.ref!); wait(m.text); }
+      else { // the question was asked before a restart: record the late answer here
+        const nid = mid(m.share, m.nodeId);
+        addMessage({ threadId: `thr-hub-${m.share}`, from: nid, to: OWNER_ID, text: m.text, edgeId: null, runId: m.replyTo ?? m.id, kind: 'antwort', via: 'bot', runtime: tr(`Mind von ${m.fromName}`, `${m.fromName}'s Mind`), about: nid });
+        mutate((s) => { const n = nodeById(s, nid); if (n) n.lastWorkedAt = new Date().toISOString(); });
+      }
+    }
+    markDone(m.id); await ack([m.id]);
+  } finally { busy.delete(m.id); }
 }
 
 // ───────── shares: own side ─────────
@@ -118,7 +145,7 @@ export async function shareBranch(rootId: string): Promise<{ code: string; expir
   const { id } = await api('/v1/shares', { json: { rootId, title: n.title } });
   saveCfg({ owned: { ...(cfg()?.owned ?? {}), [rootId]: id } });
   await pushSnapshot(rootId, id);
-  const inv = await api(`/v1/shares/${id}/invite`, { json: {} });
+  const inv = await api(`/v1/shares/${id}/invite`, { json: {} }); // a one-time link for someone not yet connected
   mutate((st) => { const x = nodeById(st, rootId); if (x) x.sharedAs = id; });
   return { code: inv.code, expires: inv.expires, shareId: id };
 }
@@ -223,20 +250,55 @@ export async function syncShares() {
   });
 }
 
-/** Ask the bot of a mirrored node (partner side). Returns the answer (waits up to 30 min). */
-export async function askRemote(nodeId: string, text: string, onWait: () => void = () => {}): Promise<string> {
+/** Ask the bot of a mirrored node (partner side). The question is stored at the hub until the other Mind picks it up;
+ *  resolves with the answer, or after 30 min with null (the answer is then recorded whenever it arrives). */
+export async function askRemote(nodeId: string, text: string, onWait: () => void = () => {}): Promise<string | null> {
   const s = S(); const n = nodeById(s, nodeId);
   if (!n?.remote) throw new Error('not a mirrored node');
-  const r = await api(`/v1/shares/${n.remote.share}/ask`, { json: { nodeId: n.remote.origId, text } });
-  if (!r.ownerOnline) onWait();
-  const t0 = Date.now();
-  while (Date.now() - t0 < 31 * 60_000) {
-    await new Promise((res) => setTimeout(res, 4000));
-    const a = await api(`/v1/asks/${r.askId}`);
-    if (a.status === 'done') return a.reply ?? '';
-    if (a.status === 'timeout') throw new Error(tr('Das andere Mind hat nicht rechtzeitig geantwortet.', 'The other Mind did not answer in time.'));
-  }
-  throw new Error(tr('Keine Antwort vom anderen Mind.', 'No answer from the other Mind.'));
+  const ref = `r${randomBytes(8).toString('hex')}`;
+  const got = new Promise<string>((res) => pendingAsks.set(ref, res));
+  const r = await api('/v1/mail', { json: { kind: 'ask', share: n.remote.share, nodeId: n.remote.origId, text, ref } });
+  if (!r.online) onWait();
+  const late = new Promise<null>((res) => setTimeout(() => { pendingAsks.delete(ref); res(null); }, 30 * 60_000));
+  return Promise.race([got, late]);
+}
+
+// ───────── connections ─────────
+export async function connectLink() {
+  const r = await api('/v1/connect-invite', { json: {} });
+  return { link: `${base(cfg()!)}#${r.code}`, expires: r.expires as string };
+}
+export async function contacts(): Promise<{ id: string; name: string; online: boolean }[]> {
+  return (await api('/v1/contacts')).contacts;
+}
+export async function removeContact(id: string) { await api(`/v1/contacts/${id}`, { method: 'DELETE' }); await syncShares(); }
+
+/** Accept a link from another Mind: a connection link (…#C…) or a share invitation (…#CODE). */
+export async function acceptLink(input: string) {
+  const [u, code] = input.includes('#') ? input.trim().split('#') : ['', input.trim()];
+  if (!code) throw new Error(tr('Link fehlt.', 'Link missing.'));
+  if (u && hubStatus().url !== u.replace(/\/+$/, '')) await setHub(u, '', false);
+  if (!code.startsWith('C')) return { share: await joinShare(code) };
+  const c = cfg(); if (!c) throw new Error(tr('Kein Hub.', 'No hub.'));
+  const r = await fetch(base(c) + '/v1/connect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(hello(c, { code })), signal: AbortSignal.timeout(15_000) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error ?? `hub ${r.status}`);
+  if (!c.enabled) saveCfg({ enabled: true });
+  startHub(); await syncShares();
+  return { peer: j.peer as { id: string; name: string } };
+}
+
+/** Share a branch with connections (replaces the member list). */
+export async function shareWith(rootId: string, mindIds: string[]) {
+  let id = cfg()?.owned?.[rootId];
+  if (!id && mindIds.length) id = (await shareBranch(rootId)).shareId;
+  if (!id) return;
+  const { shares } = await api('/v1/shares');
+  const cur: string[] = shares.find((x: { id: string }) => x.id === id)?.memberIds ?? [];
+  for (const m of mindIds) if (!cur.includes(m)) await api(`/v1/shares/${id}/members`, { json: { mindId: m } });
+  for (const m of cur) if (!mindIds.includes(m)) await api(`/v1/shares/${id}/members/${m}`, { method: 'DELETE' });
+  if (!mindIds.length) await unshareBranch(rootId);
+  await syncShares();
 }
 
 export const isMirror = (s: GraphState, id: string) => !!nodeById(s, id)?.remote;

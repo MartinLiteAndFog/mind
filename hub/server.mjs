@@ -9,8 +9,10 @@
 //   POST /v1/shares                 – share a branch · PUT /v1/shares/:id/snapshot · POST /v1/shares/:id/invite
 //   POST /v1/join                   – join a shared branch with an invite code
 //   GET  /v1/shares                 – own and joined shares (with snapshots of joined ones)
-//   POST /v1/shares/:id/ask         – ask a bot of a shared branch · GET /v1/asks/:id – its answer
 //   DELETE /v1/shares/:id           – owner stops sharing / member leaves
+//   POST /v1/connect-invite · POST /v1/connect · GET /v1/contacts · DELETE /v1/contacts/:id – connections between Minds
+//   POST /v1/shares/:id/members {mindId} · DELETE /v1/shares/:id/members/:mindId        – share with a connection
+//   POST /v1/mail · POST /v1/ack     – durable messages between Minds (kept until the recipient confirms; pushed via poll)
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'node:fs';
@@ -29,8 +31,8 @@ const rid = (p) => `${p}${randomBytes(9).toString('base64url')}`;
 const now = () => new Date().toISOString();
 
 // ── persistence ──
-let db = { minds: {}, shares: {} };
-try { if (existsSync(FILE)) db = { minds: {}, shares: {}, ...JSON.parse(readFileSync(FILE, 'utf8')) }; } catch (e) { console.error('[hub] state unreadable, starting empty', e); }
+let db = { minds: {}, shares: {}, contacts: {}, cinvites: {}, mail: {} };
+try { if (existsSync(FILE)) db = { ...db, ...JSON.parse(readFileSync(FILE, 'utf8')) }; } catch (e) { console.error('[hub] state unreadable, starting empty', e); }
 let saveT = null;
 function save() {
   clearTimeout(saveT);
@@ -41,13 +43,34 @@ function save() {
 const queues = new Map();   // mindId -> job[]
 const pollers = new Map();  // mindId -> res (waiting long-poll)
 const waiting = new Map();  // jobId -> { resolve, timer }
-const asks = new Map();     // askId -> { status, reply, at, from, to }
 
+const LEASE = 20 * 60_000; // undelivered or unconfirmed mail is offered again after this
+function dueMail(mindId) {
+  const box = db.mail[mindId] ?? [];
+  const due = box.filter((m) => !m.offeredAt || Date.now() - Date.parse(m.offeredAt) > LEASE);
+  for (const m of due) m.offeredAt = now();
+  if (due.length) save();
+  return due;
+}
+function wake(mindId) {
+  const p = pollers.get(mindId);
+  if (!p) return;
+  const jobs = (queues.get(mindId) ?? []).splice(0), mail = dueMail(mindId);
+  if (!jobs.length && !mail.length) return;
+  pollers.delete(mindId); clearTimeout(p.timer); sendJson(p.res, 200, { jobs, mail });
+}
 function push(mindId, job) {
   const q = queues.get(mindId) ?? []; q.push(job); queues.set(mindId, q);
-  const p = pollers.get(mindId);
-  if (p) { pollers.delete(mindId); clearTimeout(p.timer); sendJson(p.res, 200, { jobs: queues.get(mindId).splice(0) }); }
+  wake(mindId);
 }
+function deliver(to, m) {
+  const box = db.mail[to] ??= [];
+  box.push({ id: rid('msg_'), at: now(), ...m });
+  if (box.length > 1000) box.splice(0, box.length - 1000);
+  save(); wake(to);
+}
+const isContact = (a, b) => (db.contacts[a] ?? []).includes(b);
+function link(a, b) { for (const [x, y] of [[a, b], [b, a]]) { const l = db.contacts[x] ??= []; if (!l.includes(y)) l.push(y); } }
 function call(mindId, job, ms) {
   return new Promise((resolve) => {
     const id = rid('job_'); job.id = id;
@@ -92,8 +115,8 @@ function register(b, allowed) {
   return { ok: true };
 }
 const shareView = (id, s, mindId) => ({
-  id, title: s.title, rootId: s.rootId, owner: db.minds[s.owner]?.name ?? '?', own: s.owner === mindId, ownerOnline: online(db.minds[s.owner]),
-  members: s.members.map((x) => db.minds[x]?.name ?? '?'), at: s.at, snapshot: s.owner === mindId ? undefined : s.snapshot,
+  id, title: s.title, rootId: s.rootId, owner: db.minds[s.owner]?.name ?? '?', ownerId: s.owner, own: s.owner === mindId, ownerOnline: online(db.minds[s.owner]),
+  members: s.members.map((x) => db.minds[x]?.name ?? '?'), memberIds: s.members, at: s.at, snapshot: s.owner === mindId ? undefined : s.snapshot,
 });
 
 const server = createServer(async (req, res) => {
@@ -129,6 +152,17 @@ const server = createServer(async (req, res) => {
       const r = register(b, !!HUB_KEY && eq(sha(b.hubKey || ''), sha(HUB_KEY)));
       return sendJson(res, r.error ? 403 : 200, r);
     }
+    if (p === '/v1/connect' && req.method === 'POST') {
+      const b = await readBody(req);
+      const inv = db.cinvites[sha(String(b.code || '').trim())];
+      if (!inv || Date.parse(inv.exp) < Date.now()) return sendJson(res, 403, { error: 'connection link unknown or expired' });
+      if (inv.from === b.mindId) return sendJson(res, 400, { error: 'that is your own link' });
+      const r = register(b, true);
+      if (r.error) return sendJson(res, 403, r);
+      delete db.cinvites[sha(String(b.code).trim())];
+      link(inv.from, b.mindId); save(); push(inv.from, { kind: 'sync' });
+      return sendJson(res, 200, { ok: true, peer: { id: inv.from, name: db.minds[inv.from]?.name ?? '?' } });
+    }
     if (p === '/v1/join' && req.method === 'POST') {
       const b = await readBody(req);
       const code = String(b.code || '').trim();
@@ -140,7 +174,7 @@ const server = createServer(async (req, res) => {
       delete s.invites[sha(code)];
       if (s.owner === b.mindId) return sendJson(res, 400, { error: 'that is your own share' });
       if (!s.members.includes(b.mindId)) s.members.push(b.mindId);
-      save();
+      link(s.owner, b.mindId); save(); push(s.owner, { kind: 'sync' });
       return sendJson(res, 200, { ok: true, share: shareView(sid, s, b.mindId) });
     }
 
@@ -149,10 +183,10 @@ const server = createServer(async (req, res) => {
 
     if (p === '/v1/poll' && req.method === 'GET') {
       save();
-      const q = queues.get(me.id);
-      if (q?.length) return sendJson(res, 200, { jobs: q.splice(0) });
-      const old = pollers.get(me.id); if (old) { clearTimeout(old.timer); sendJson(old.res, 200, { jobs: [] }); }
-      const timer = setTimeout(() => { if (pollers.get(me.id)?.res === res) pollers.delete(me.id); sendJson(res, 200, { jobs: [] }); }, 25_000);
+      const jobs = (queues.get(me.id) ?? []).splice(0), mail = dueMail(me.id);
+      if (jobs.length || mail.length) return sendJson(res, 200, { jobs, mail });
+      const old = pollers.get(me.id); if (old) { clearTimeout(old.timer); sendJson(old.res, 200, { jobs: [], mail: [] }); }
+      const timer = setTimeout(() => { if (pollers.get(me.id)?.res === res) pollers.delete(me.id); sendJson(res, 200, { jobs: [], mail: [] }); }, 25_000);
       pollers.set(me.id, { res, timer });
       req.on('close', () => { if (pollers.get(me.id)?.res === res) { clearTimeout(timer); pollers.delete(me.id); } });
       return;
@@ -162,6 +196,56 @@ const server = createServer(async (req, res) => {
       const w = waiting.get(b.id);
       if (w) { waiting.delete(b.id); clearTimeout(w.timer); w.resolve({ result: b.result }); }
       return sendJson(res, 200, { ok: true });
+    }
+
+    // Durable mail: ask (member → owner of a share) and answer (owner → member)
+    if (p === '/v1/mail' && req.method === 'POST') {
+      const b = await readBody(req);
+      const s = db.shares[b.share];
+      if (!s) return sendJson(res, 404, { error: 'no such share' });
+      const kind = b.kind === 'answer' ? 'answer' : 'ask';
+      const to = kind === 'ask' ? s.owner : String(b.to || '');
+      if (kind === 'ask' && !s.members.includes(me.id)) return sendJson(res, 403, { error: 'not a member of this share' });
+      if (kind === 'answer' && (s.owner !== me.id || !s.members.includes(to))) return sendJson(res, 403, { error: 'answers go from the owner to members' });
+      deliver(to, { from: me.id, fromName: db.minds[me.id]?.name ?? '?', kind, share: b.share, nodeId: String(b.nodeId || ''), text: String(b.text || '').slice(0, 50000), replyTo: b.replyTo ?? null, ref: b.ref ?? null });
+      return sendJson(res, 200, { ok: true, online: online(db.minds[to]) });
+    }
+    if (p === '/v1/ack' && req.method === 'POST') {
+      const b = await readBody(req);
+      const ids = new Set(Array.isArray(b.ids) ? b.ids : []);
+      db.mail[me.id] = (db.mail[me.id] ?? []).filter((m) => !ids.has(m.id)); save();
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // Connections between Minds
+    if (p === '/v1/connect-invite' && req.method === 'POST') {
+      const code = `C${randomBytes(4).toString('hex')}-${randomBytes(4).toString('hex')}`.toUpperCase();
+      for (const [k, v] of Object.entries(db.cinvites)) if (Date.parse(v.exp) < Date.now()) delete db.cinvites[k];
+      db.cinvites[sha(code)] = { from: me.id, exp: new Date(Date.now() + 7 * 864e5).toISOString() }; save();
+      return sendJson(res, 200, { code, expires: db.cinvites[sha(code)].exp });
+    }
+    if (p === '/v1/contacts' && req.method === 'GET') {
+      return sendJson(res, 200, { contacts: (db.contacts[me.id] ?? []).filter((x) => db.minds[x]).map((x) => ({ id: x, name: db.minds[x].name ?? '?', online: online(db.minds[x]) })) });
+    }
+    const cm = p.match(/^\/v1\/contacts\/([\w-]+)$/);
+    if (cm && req.method === 'DELETE') {
+      for (const [x, y] of [[me.id, cm[1]], [cm[1], me.id]]) db.contacts[x] = (db.contacts[x] ?? []).filter((z) => z !== y);
+      for (const s of Object.values(db.shares)) { if (s.owner === me.id) s.members = s.members.filter((z) => z !== cm[1]); if (s.owner === cm[1]) s.members = s.members.filter((z) => z !== me.id); }
+      save(); push(cm[1], { kind: 'sync' });
+      return sendJson(res, 200, { ok: true });
+    }
+    const mm = p.match(/^\/v1\/shares\/([\w-]+)\/members(?:\/([\w-]+))?$/);
+    if (mm) {
+      const s = db.shares[mm[1]];
+      if (!s || s.owner !== me.id) return sendJson(res, 403, { error: 'owner only' });
+      if (req.method === 'POST') {
+        const b = await readBody(req); const who = String(b.mindId || '');
+        if (!isContact(me.id, who)) return sendJson(res, 403, { error: 'not one of your connections' });
+        if (!s.members.includes(who)) s.members.push(who);
+        save(); push(who, { kind: 'sync' });
+        return sendJson(res, 200, { ok: true });
+      }
+      if (req.method === 'DELETE' && mm[2]) { s.members = s.members.filter((z) => z !== mm[2]); save(); push(mm[2], { kind: 'sync' }); return sendJson(res, 200, { ok: true }); }
     }
 
     // Shares
@@ -179,7 +263,7 @@ const server = createServer(async (req, res) => {
       save();
       return sendJson(res, 200, { id });
     }
-    const sm = p.match(/^\/v1\/shares\/([\w-]+)(?:\/(snapshot|invite|ask))?$/);
+    const sm = p.match(/^\/v1\/shares\/([\w-]+)(?:\/(snapshot|invite))?$/);
     if (sm) {
       const s = db.shares[sm[1]];
       if (!s) return sendJson(res, 404, { error: 'no such share' });
@@ -188,7 +272,10 @@ const server = createServer(async (req, res) => {
       if (sm[2] === 'snapshot' && req.method === 'PUT') {
         if (!owner) return sendJson(res, 403, { error: 'owner only' });
         const b = await readBody(req);
-        s.snapshot = b.snapshot ?? null; s.title = String(b.title || s.title).slice(0, 120); s.at = now(); save();
+        const h = sha(JSON.stringify({ ...(b.snapshot ?? {}), at: 0 }));
+        s.snapshot = b.snapshot ?? null; s.title = String(b.title || s.title).slice(0, 120); s.at = now();
+        if (h !== s.hash) { s.hash = h; for (const x of s.members) push(x, { kind: 'sync' }); }
+        save();
         return sendJson(res, 200, { ok: true });
       }
       if (sm[2] === 'invite' && req.method === 'POST') {
@@ -199,26 +286,11 @@ const server = createServer(async (req, res) => {
         s.invites[sha(code)] = new Date(Date.now() + 7 * 864e5).toISOString(); save();
         return sendJson(res, 200, { code, expires: s.invites[sha(code)] });
       }
-      if (sm[2] === 'ask' && req.method === 'POST') {
-        if (!member) return sendJson(res, 403, { error: 'members ask, the owner works locally' });
-        const b = await readBody(req);
-        const askId = rid('ask_');
-        asks.set(askId, { status: 'running', at: Date.now(), to: s.owner, from: me.id });
-        call(s.owner, { kind: 'ask', share: sm[1], nodeId: String(b.nodeId || ''), text: String(b.text || '').slice(0, 20000), from: db.minds[me.id]?.name ?? 'Partner' }, 30 * 60_000)
-          .then((r) => asks.set(askId, { ...asks.get(askId), status: r.timeout ? 'timeout' : 'done', reply: r.result?.reply ?? r.result?.error ?? '' }));
-        return sendJson(res, 200, { askId, ownerOnline: online(db.minds[s.owner]) });
-      }
       if (!sm[2] && req.method === 'DELETE') {
-        if (owner) delete db.shares[sm[1]]; else s.members = s.members.filter((x) => x !== me.id);
+        if (owner) { for (const x of s.members) push(x, { kind: 'sync' }); delete db.shares[sm[1]]; } else s.members = s.members.filter((x) => x !== me.id);
         save();
         return sendJson(res, 200, { ok: true });
       }
-    }
-    const am = p.match(/^\/v1\/asks\/([\w-]+)$/);
-    if (am && req.method === 'GET') {
-      const a = asks.get(am[1]);
-      if (!a || a.from !== me.id) return sendJson(res, 404, { error: 'no such question' });
-      return sendJson(res, 200, { status: a.status, reply: a.reply ?? null });
     }
     return sendJson(res, 404, { error: 'not found' });
   } catch (e) {
@@ -226,6 +298,4 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// Old answers are dropped after a day
-setInterval(() => { for (const [k, a] of asks) if (Date.now() - a.at > 864e5) asks.delete(k); }, 3600_000).unref();
 server.listen(PORT, () => console.log(`[hub] listening on ${PORT}, data ${FILE}, ${Object.keys(db.minds).length} minds, ${Object.keys(db.shares).length} shares`));
