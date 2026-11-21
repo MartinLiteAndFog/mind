@@ -395,3 +395,6 @@ body.offline #map { opacity:.55; }
 .node.big.on .dot { stroke-width:3.5; }
 .node.big text.root { font-size:calc(var(--fs, 13px) * 1.7); }
 .node.big .ring { stroke-width:2.5; }
+/* mirrored branch from another Mind */
+#pop .mirror{border:1px dashed #9aa;border-radius:8px;padding:8px 10px;margin:4px 0 10px;font-size:12.5px;background:rgba(120,140,150,.06)}
+#pop .mirror .mut{margin-top:3px}

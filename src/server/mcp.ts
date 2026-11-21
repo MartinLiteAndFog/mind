@@ -13,8 +13,8 @@ import { nodeById } from '../core/graph.ts';
 
 const SECRETS = join(DATA_DIR, 'secrets.json');
 
-function readSecrets(): Record<string, any> { try { return JSON.parse(readFileSync(SECRETS, 'utf8')); } catch { return {}; } }
-function writeSecrets(all: Record<string, any>) { mkdirSync(DATA_DIR, { recursive: true }); writeFileSync(SECRETS, JSON.stringify(all, null, 2)); chmodSync(SECRETS, 0o600); }
+export function readSecrets(): Record<string, any> { try { return JSON.parse(readFileSync(SECRETS, 'utf8')); } catch { return {}; } }
+export function writeSecrets(all: Record<string, any>) { mkdirSync(DATA_DIR, { recursive: true }); writeFileSync(SECRETS, JSON.stringify(all, null, 2)); chmodSync(SECRETS, 0o600); }
 
 export function connectorToken(): string {
   const all = readSecrets();
@@ -33,7 +33,8 @@ const fixedCfg = () => { const c = readSecrets().connector ?? {}; return c.cfTok
 export function tunnelStatus() {
   const enabled = !!readSecrets().connector?.enabled;
   const fx = fixedCfg();
-  return { enabled, running: !!T.proc, url: T.url, error: T.err, mcpUrl: T.url ? `${T.url}/mcp/${connectorToken()}` : '', fixed: !!fx, fixedHost: fx?.host ?? '', lastOk: T.lastOk ?? '', fails: T.fails ?? 0, urlChangedAt: T.urlChangedAt ?? '' };
+  const hubUrl = (() => { const h = readSecrets().hub; return h?.enabled && h?.url ? String(h.url).replace(/\/+$/, '') : ''; })();
+  return { enabled, running: !!T.proc, url: T.url, error: T.err, hub: hubUrl, mcpUrl: hubUrl ? `${hubUrl}/mcp/${connectorToken()}` : T.url ? `${T.url}/mcp/${connectorToken()}` : '', fixed: !!fx, fixedHost: fx?.host ?? '', lastOk: T.lastOk ?? '', fails: T.fails ?? 0, urlChangedAt: T.urlChangedAt ?? '' };
 }
 export function startTunnel(port: number) {
   T.port = port;

@@ -1,6 +1,6 @@
 import { OWNER_ID, OWNER_ALIASES, OWNER, tr, getLang, setLang, setOwner } from '../core/i18n.ts';
 import { Store } from '../ui/store.ts';
-import { defaultUpdatePrompt, planeName, type GraphState, type BranchPrompt, type BotMessage } from '../core/model.ts';
+import { defaultUpdatePrompt, planeName, type GraphState, type GraphNode, type BranchPrompt, type BotMessage } from '../core/model.ts';
 import { nodeById, children, addChild, touch, ancestors, descendants, removeBranch, restoreBranch } from '../core/graph.ts';
 import { taskMarkdown } from '../core/agents.ts';
 import { responsibleBot, standingPrompts, addStanding, removePrompt } from '../core/branches.ts';
@@ -582,7 +582,7 @@ function todosHtml(id: string, bot: boolean) {
   const n = nodeById(S(), id)!;
   const t = n.todos;
   const refresh = bot ? `<span class="ic sm" data-a="summarize" title="${tr('Kurzlage vom Bot neu erstellen lassen', 'Have the bot recreate the short status')}">↻</span>` : '';
-  if (!t) return `<div class="todos empty">${tr('Noch keine Kurzlage.', 'No short status yet.')}${bot ? ' ' + refresh : ` <span class="hint">${tr('+ oben im Fenster legt einen Agenten an.', '+ at the top of the window creates an agent.')}</span>`}</div>`;
+  if (!t) return `<div class="todos empty">${tr('Noch keine Kurzlage.', 'No short status yet.')}${bot ? ' ' + refresh : nodeById(S(), id)?.remote ? '' : ` <span class="hint">${tr('+ oben im Fenster legt einen Agenten an.', '+ at the top of the window creates an agent.')}</span>`}</div>`;
   return `<div class="todos">
     ${t.pos.map((x) => tdItem(x, 'pos')).join('')}
     ${t.neg.map((x) => tdItem(x, 'neg')).join('')}
@@ -734,7 +734,7 @@ function threadsOfEdge(edgeId: string) {
 }
 
 const md = (t: string) => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
-const who = (id: string) => (id === OWNER_ID ? tr('Du', 'You') : nodeById(S(), id)?.title ?? id);
+const who = (id: string) => (id === OWNER_ID ? tr('Du', 'You') : id.startsWith('partner:') ? id.slice(8) : nodeById(S(), id)?.title ?? id);
 
 function talkHtml(filter: (m: BotMessage) => boolean, botId: string | null, limit = 8) {
   const msgs = S().botMessages.filter(filter).slice(-limit);
@@ -767,6 +767,7 @@ function nodeMenuHtml(id: string, isBot: boolean) {
     <div class="opt" data-a="child">${tr('Unterknoten anlegen', 'Create sub-node')}</div>
     ${kids ? `<div class="opt" data-a="fold">${collapsed.has(id) ? tr('Unterknoten zeigen', 'Show sub-nodes') : tr('Unterknoten einklappen', 'Collapse sub-nodes')}</div>` : ''}
     ${isBot ? `<div class="opt" data-a="instr">${tr('Arbeitsanweisung (≡)', 'Work instruction (≡)')}</div>` : ''}
+    ${id === OWNER_ID ? '' : nodeById(S(), id)?.remote ? `<div class="opt" data-a="leave">${tr('Gespiegelten Ast verlassen', 'Leave mirrored branch')}</div>` : `<div class="opt" data-a="share">${nodeById(S(), id)?.sharedAs ? tr('Geteilt ✓ · neue Einladung', 'Shared ✓ · new invitation') : tr('Ast mit anderem Mind teilen …', 'Share branch with another Mind …')}</div>${nodeById(S(), id)?.sharedAs ? `<div class="opt" data-a="unshare">${tr('Teilen beenden', 'Stop sharing')}</div>` : ''}`}
     <div class="opt" data-a="reich">${tr('Reich · Arbeitsordner · privat', 'Realm · work folders · private')}${nodeById(S(), id)?.private ? ' 🔒' : ''}</div>
     <div class="opt" data-a="ctx">${tr('Kontext kopieren · im Chat weitermachen', 'Copy context · continue in chat')}</div>
     ${$('pop').classList.contains('sized') ? `<div class="opt" data-a="popreset">${tr('Fenstergröße zurücksetzen', 'Reset window size')}</div>` : ''}
@@ -842,13 +843,13 @@ function renderPop() {
   if (sel.kind === 'node') {
     const n = nodeById(s, sel.id);
     if (!n) { sel = null; pop.hidden = true; return; }
-    html = `${n.isBot ? modelHead(n.id) : `<div class="mhead"><span class="ttl" data-rename="${esc(n.id)}" title="${tr('Doppelklick: umbenennen', 'Double-click: rename')}">${esc(n.title)}</span>${chefOf(n.id) ? `<i class="eff">· ${tr('Chef', 'Boss')}: ${esc(nodeById(s, chefOf(n.id)!)?.title)}</i>` : ''}<span class="sp"></span><span class="ic act" data-a="mkbot" title="${tr('Agent für diesen Knoten anlegen', 'Create an agent for this node')}">+</span><span class="ic" data-a="big" title="${big ? tr('Verkleinern', 'Make smaller') : tr('Groß ansehen', 'View large')}">${big ? '⤡' : '⤢'}</span><span class="ic" data-a="nmenu" title="${tr('Mehr', 'More')}">⋯</span><span class="ic" data-a="min" title="${minimized ? tr('Wieder öffnen', 'Reopen') : tr('Minimieren', 'Minimize')}">${minimized ? '▢' : '–'}</span><span class="ic" data-a="close" title="${tr('Schließen (Esc)', 'Close (Esc)')}">×</span></div>`}
+    html = `${n.isBot ? modelHead(n.id) : `<div class="mhead"><span class="ttl" data-rename="${esc(n.id)}" title="${tr('Doppelklick: umbenennen', 'Double-click: rename')}">${esc(n.title)}</span>${chefOf(n.id) && !n.remote ? `<i class="eff">· ${tr('Chef', 'Boss')}: ${esc(nodeById(s, chefOf(n.id)!)?.title)}</i>` : ''}<span class="sp"></span><span class="ic act" data-a="mkbot" title="${tr('Agent für diesen Knoten anlegen', 'Create an agent for this node')}">+</span><span class="ic" data-a="big" title="${big ? tr('Verkleinern', 'Make smaller') : tr('Groß ansehen', 'View large')}">${big ? '⤡' : '⤢'}</span><span class="ic" data-a="nmenu" title="${tr('Mehr', 'More')}">⋯</span><span class="ic" data-a="min" title="${minimized ? tr('Wieder öffnen', 'Reopen') : tr('Minimieren', 'Minimize')}">${minimized ? '▢' : '–'}</span><span class="ic" data-a="close" title="${tr('Schließen (Esc)', 'Close (Esc)')}">×</span></div>`}
       ${n.isBot ? okLineHtml(n.id) : ''}
       ${n.isBot ? modelMenuHtml(n.id) : ''}
       ${nodeMenuHtml(n.id, !!n.isBot)}
       ${childInput ? `<div class="row"><input id="child-title" placeholder="${tr('Name des Unterknotens ↵', 'Name of the sub-node ↵')}"></div>` : ''}
-      <div class="body"><div class="mini" data-a="totop" title="${tr('Zur Kurzlage', 'To the short status')}">${miniLine(n.id)}</div>${linkAskHtml(n.id)}${todosHtml(n.id, !!n.isBot)}${detailsHtml(n)}</div>
-      ${n.isBot ? `<div class="foot"><div class="livebar" id="livebar" hidden></div><div class="row ask"><input id="prompt" placeholder="${tr(`Mit ${esc(n.title)} sprechen…`, `Talk to ${esc(n.title)}…`)}" autocomplete="off"><span class="ic" data-a="mic" id="mic" title="${tr('Spracheingabe', 'Voice input')}">🎤</span><span class="ic send" data-a="send" title="${tr('Senden (Enter)', 'Send (Enter)')}">↑</span></div></div>`
+      <div class="body">${n.remote ? mirrorHtml(n) : ''}<div class="mini" data-a="totop" title="${tr('Zur Kurzlage', 'To the short status')}">${miniLine(n.id)}</div>${linkAskHtml(n.id)}${todosHtml(n.id, !!n.isBot)}${detailsHtml(n)}</div>
+      ${n.isBot || n.remote ? `<div class="foot"><div class="livebar" id="livebar" hidden></div><div class="row ask"><input id="prompt" placeholder="${n.remote ? tr(`Nachricht an den Bot bei ${esc(n.remote.origin)}…`, `Message to the bot at ${esc(n.remote.origin)}…`) : tr(`Mit ${esc(n.title)} sprechen…`, `Talk to ${esc(n.title)}…`)}" autocomplete="off"><span class="ic" data-a="mic" id="mic" title="${tr('Spracheingabe', 'Voice input')}">🎤</span><span class="ic send" data-a="send" title="${tr('Senden (Enter)', 'Send (Enter)')}">↑</span></div></div>`
         : chefOf(n.id) ? `<div class="foot"><div class="livebar" id="livebar" hidden></div><div class="row ask"><input id="prompt" placeholder="${tr(`Frage zu ${esc(n.title)} an ${esc(nodeById(s, chefOf(n.id)!)?.title)}…`, `Question about ${esc(n.title)} to ${esc(nodeById(s, chefOf(n.id)!)?.title)}…`)}" autocomplete="off"><span class="ic" data-a="mic" id="mic" title="${tr('Spracheingabe', 'Voice input')}">🎤</span><span class="ic send" data-a="send" title="${tr('Senden (Enter)', 'Send (Enter)')}">↑</span></div></div>` : ''}`;
     pop.classList.toggle('big', big && !minimized);
     pop.classList.toggle('min', minimized);
@@ -907,7 +908,8 @@ async function send(text: string, via: BranchPrompt['via']) {
   if (!sel || !text.trim()) return;
   const s = S();
   const edgeId = sel.kind === 'edge' ? sel.id : null;
-  const about = sel.kind === 'node' && !nodeById(s, sel.id)?.isBot ? sel.id : null;
+  const mirror = sel.kind === 'node' && !!nodeById(s, sel.id)?.remote;
+  const about = sel.kind === 'node' && !mirror && !nodeById(s, sel.id)?.isBot ? sel.id : null;
   const bot = sel.kind === 'node' ? (about ? chefOf(sel.id) : sel.id) : responsibleBot(s, sel.id);
   if (!bot) {
     s.branchPrompts.push({ id: `bp-${Date.now().toString(36)}`, edgeId: edgeId!, text: text.trim(), kind: 'einmalig', via, createdAt: new Date().toISOString(), botNodeId: null, taskId: null });
@@ -1253,6 +1255,31 @@ function connHtml() {
       : `<div class="mut">${conn.error ? esc(conn.error) : tr('Tunnel startet … (einige Sekunden)', 'Tunnel starting … (a few seconds)')}</div>`) : `<div class="mut">${tr('Aus: Mind ist nur auf diesem Mac erreichbar.', 'Off: Mind is only reachable on this Mac.')}</div>`}`;
 }
 
+let hub: { configured: boolean; enabled: boolean; url: string; connected: boolean; error: string; mcpUrl: string; shares: { id: string; title: string; own: boolean; owner: string; members: string[]; ownerOnline: boolean }[] } | null = null;
+function hubHtml() {
+  const h = hub;
+  const head = `<div class="rlabel">${tr('Hub', 'Hub')} <span>${tr('– verbindet Mind mit dem Internet (Connector ohne Tunnel) und mit anderen Minds (geteilte Äste)', '– connects Mind to the internet (connector without tunnel) and to other Minds (shared branches)')}</span></div>`;
+  if (!h) return `${head}<div class="mut">${tr('Wird geladen …', 'Loading …')}</div>`;
+  const join = `<div class="rrow"><input id="r-join" placeholder="${tr('Einladung einfügen (https://…#CODE)', 'Paste invitation (https://…#CODE)')}"><button data-r="hub-join">${tr('Beitreten', 'Join')}</button></div>`;
+  if (!h.configured || !h.enabled) return `${head}<div class="rrow"><input id="r-hub-url" placeholder="https://…up.railway.app" value="${esc(h.url)}"><input id="r-hub-key" type="password" placeholder="${tr('Hub-Schlüssel', 'Hub key')}"><button data-r="hub-save">${tr('Verbinden', 'Connect')}</button></div>
+    <div class="mut">${tr('Oder mit einer Einladung beitreten – dann braucht es keinen Hub-Schlüssel:', 'Or join with an invitation – then no hub key is needed:')}</div>${join}`;
+  const shares = h.shares.length ? h.shares.map((x) => `<div class="rrow"><b>${esc(x.title)}</b><span class="mut">${x.own ? tr(`geteilt mit ${esc(x.members.join(', ') || 'noch niemandem')}`, `shared with ${esc(x.members.join(', ') || 'nobody yet')}`) : tr(`von ${esc(x.owner)}${x.ownerOnline ? '' : ' · offline'}`, `from ${esc(x.owner)}${x.ownerOnline ? '' : ' · offline'}`)}</span></div>`).join('') : `<div class="mut">${tr('Noch keine geteilten Äste. Teilen: ⋯ im Knotenfenster → „Ast mit anderem Mind teilen“.', 'No shared branches yet. To share: ⋯ in the node window → "Share branch with another Mind".')}</div>`;
+  return `${head}<div class="mut">${esc(h.url)} · ${h.connected ? tr('verbunden ✓', 'connected ✓') : tr('nicht verbunden', 'not connected')}${h.error ? ` · ${esc(h.error)}` : ''}</div>
+    <div class="rrow"><input id="r-hub-mcp" readonly value="${esc(h.mcpUrl)}"><b class="lnk" data-r="hub-copy">${tr('Connector-Adresse kopieren', 'Copy connector address')}</b></div>
+    <div class="mut">${tr('Diese Adresse in Claude bzw. ChatGPT als Connector eintragen (statt der Tunnel-Adresse). Sie bleibt gleich, solange der Hub läuft.', 'Enter this address as the connector in Claude or ChatGPT (instead of the tunnel address). It stays the same as long as the hub runs.')}</div>
+    ${shares}${join}`;
+}
+async function loadHub() {
+  try { hub = await (await fetch('/api/hub')).json(); } catch { hub = null; }
+  const el = document.getElementById('r-hub'); if (el) el.innerHTML = hubHtml();
+}
+function mirrorHtml(n: GraphNode) {
+  const r = n.remote!;
+  const files = r.files?.length ? `<div class="mut">${tr('Dateien dort', 'Files there')}: ${r.files.slice(0, 12).map(esc).join(', ')}</div>` : '';
+  const msgs = r.msgs?.length ? `<div class="mut" style="margin-top:4px">${r.msgs.slice(-3).map((m) => `<div><b>${esc(m.from)}:</b> ${esc(m.text.slice(0, 220))}</div>`).join('')}</div>` : '';
+  return `<div class="mirror"><b>${tr(`Gespiegelt aus dem Mind von ${esc(r.origin)}`, `Mirrored from ${esc(r.origin)}'s Mind`)}</b> · ${tr('Stand', 'as of')} ${esc(new Date(r.at).toLocaleString(LOC(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}${r.online ? '' : ` · ${tr('gerade offline', 'offline right now')}`}<div class="mut">${tr(`Nur lesen. Deine Nachricht unten geht an den Bot bei ${esc(r.origin)}.`, `Read only. Your message below goes to the bot at ${esc(r.origin)}.`)}</div>${files}${msgs}</div>`;
+}
+
 async function loadConn() {
   try { conn = await (await fetch('/api/connector')).json(); } catch { conn = null; }
   const el = document.getElementById('r-conn'); if (el) el.innerHTML = connHtml();
@@ -1326,6 +1353,7 @@ function renderRules() {
     <div class="rsec" id="r-ok">${okBudgetHtml()}</div>
     <div class="rsec"><div class="rlabel">${tr('Papierkorb', 'Trash')} <span>${tr('– entfernte Äste, wiederherstellbar', '– removed branches, restorable')}</span></div>${(s.trash ?? []).slice().reverse().map((t) => `<div class="rrow"><b>${esc(t.title)}</b><span class="mut">${t.nodes.length} ${tr('Knoten', 'nodes')} · ${esc(t.at.slice(0, 16).replace('T', ' '))}</span><span class="sp"></span><b class="lnk" data-r="restore" data-id="${esc(t.id)}">${tr('Wiederherstellen', 'Restore')}</b></div>`).join('') || `<div class="mut">${tr('Leer.', 'Empty.')}</div>`}</div>
     <div class="rsec" id="r-tts">${ttsHtml()}</div>
+    <div class="rsec" id="r-hub">${hubHtml()}</div>
     <div class="rsec" id="r-conn">${connHtml()}</div>
     <div class="mut" style="margin-top:18px">${tr('Arbeitsanweisungen einzelner Bereiche bearbeitest du direkt am Bot: ≡ oben im Knotenfenster.', 'You edit the work instructions of individual areas directly on the bot: ≡ at the top of the node window.')}</div>
   </div>`;
@@ -1334,7 +1362,7 @@ function renderRules() {
 function openRules(focus?: string) {
   renderRules();
   loadTts();
-  loadConn();
+  loadConn(); loadHub();
   $('rules').hidden = false;
   if (focus) return;
   if (focus) setTimeout(() => {
@@ -1368,6 +1396,15 @@ $('rules').addEventListener('click', async (ev) => {
       break;
     }
     case 'conn-restart': { conn = await (await fetch('/api/connector', { method: 'PUT', body: JSON.stringify({ restart: true }) })).json(); const el = document.getElementById('r-conn'); if (el) el.innerHTML = connHtml(); note(tr('Tunnel startet neu – neue Adresse in ein paar Sekunden.', 'Tunnel restarting – new address in a few seconds.')); setTimeout(loadConn, 4000); break; }
+    case 'hub-copy': copy(($('r-hub-mcp') as HTMLInputElement).value, tr('Connector-Adresse kopiert.', 'Connector address copied.')); break;
+    case 'hub-save': case 'hub-join': {
+      const body = t.dataset.r === 'hub-save'
+        ? { cmd: 'hub', args: [($('r-hub-url') as HTMLInputElement).value.trim(), ($('r-hub-key') as HTMLInputElement).value.trim()].filter(Boolean) }
+        : { cmd: 'join', args: [($('r-join') as HTMLInputElement).value.trim()] };
+      if (!body.args[0]) { note(tr('Erst ausfüllen.', 'Fill it in first.')); break; }
+      note((await dgText({ ...body, as: OWNER_ID })).trim());
+      await loadHub(); await refresh(true); break;
+    }
     case 'conn-fixed': case 'conn-unfix': {
       const body = t.dataset.r === 'conn-unfix' ? { cfToken: '', cfHost: '' } : { cfToken: ($('r-cftoken') as HTMLInputElement).value.trim(), cfHost: ($('r-cfhost') as HTMLInputElement).value.trim() };
       if (t.dataset.r === 'conn-fixed' && (!body.cfToken || !body.cfHost)) { note(tr('Hostname und Token eintragen.', 'Enter hostname and token.')); break; }
@@ -1699,6 +1736,13 @@ $('pop').addEventListener('click', async (ev) => {
     nodeMenu = null;
     note(tr('Alter Chat archiviert. ↗ öffnet jetzt einen neuen Chat, der sich Stand und Verlauf über den Connector holt.', 'Old chat archived. ↗ now opens a new chat that fetches state and history via the connector.'));
     commit(false);
+  } else if ((a === 'share' || a === 'unshare' || a === 'leave') && sel.kind === 'node') {
+    nodeMenu = null; renderPop();
+    if (a === 'unshare' && !confirm(tr('Teilen beenden? Die andere Seite verliert den Spiegel.', 'Stop sharing? The other side loses the mirror.'))) return;
+    const txt = await dgText({ cmd: a, args: [sel.id], as: OWNER_ID });
+    if (a === 'share' && /#/.test(txt)) { const inv = txt.trim().split('\n').pop()!; copy(inv, tr('Einladung kopiert – an die andere Person schicken.', 'Invitation copied – send it to the other person.')); }
+    else note(txt.trim());
+    return refresh(true);
   } else if (a === 'reich') { modelMenu = false; nodeMenu = nodeMenu === 'reich' ? null : 'reich'; renderPop();
   } else if (a === 'reich-save' && sel.kind === 'node') {
     const n = nodeById(s, sel.id)!;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync, renameSync } from 'node:fs';
 import { readState, writeState, storeSourceFile, safeDataPath, writeTask, listReports, DATA_DIR } from './store.ts';
+import { startHub, hubStatus, setHub } from './hub.ts';
 import { NODES_DIR, startRun, dgCommand, runs, setApiBase, ensureBin, ensureTestBot, restoreInbox, chatPending, cancelRun, newSection, updateBot, discardPending, listNodeFiles, readNodeFile, nodeFilePath, okCascade, blockerSweep, fillOk, queued, autoStatus, setAuto, autoActive } from './bots.ts';
 import { spawn, execFileSync } from 'node:child_process';
 import { synth, publicTts, saveTts } from './tts.ts';
@@ -86,6 +87,11 @@ export const handler = async (req: IncomingMessage, res: ServerResponse, next: (
       const b = JSON.parse((await body(req)).toString('utf8'));
       const r = await startRun({ nodeId: b.nodeId, text: b.text, from: OWNER_ID, threadId: b.threadId ?? null, edgeId: b.edgeId ?? null, depth: 0, via: b.via ?? 'text', about: b.about ?? null, brief: !!b.brief }, !!b.wait);
       return send(res, 200, r);
+    }
+    if (url.pathname === '/api/hub' && req.method === 'GET') return send(res, 200, hubStatus());
+    if (url.pathname === '/api/hub' && req.method === 'PUT') {
+      const b = JSON.parse((await body(req)).toString('utf8'));
+      try { return send(res, 200, await setHub(String(b.url ?? ''), String(b.key ?? ''), b.enabled !== false)); } catch (e) { return send(res, 400, { error: (e as Error).message }); }
     }
     if (url.pathname === '/api/connector' && req.method === 'GET') return send(res, 200, tunnelStatus());
     if (url.pathname === '/api/connector' && req.method === 'PUT') { const b = JSON.parse((await body(req)).toString('utf8')); if (b.rotate) rotateToken(); if (b.restart) return send(res, 200, restartTunnel()); if (b.cfToken !== undefined) return send(res, 200, setFixedTunnel(String(b.cfToken ?? ''), String(b.cfHost ?? ''))); return send(res, 200, b.enabled === undefined ? tunnelStatus() : setConnector(!!b.enabled, serverPort)); }
@@ -169,6 +175,7 @@ export const isLocalHost = (host: unknown) => LOCAL_HOSTS.test(String(host ?? ''
 /** After start: set the API address for the bots, restore tunnel and queues. */
 export function onListening(port: number) {
   migrateStoredOwner();
+  startHub();
   setApiBase(`http://127.0.0.1:${port}`); serverPort = port;
   if (tunnelStatus().enabled) startTunnel(port);
   ensureBin(); ensureTestBot(); restoreInbox();

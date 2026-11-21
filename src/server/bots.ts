@@ -1,5 +1,6 @@
 // Bot runtime: runs a node bot as a local agent process (claude / codex / test).
 // Bots work in data/nodes/<id>/ (own CLAUDE.md / AGENTS.md) and change the graph only via `dg`.
+import { askRemote, shareBranch, unshareBranch, joinShare, leaveShare, hubStatus, setHub, syncShares } from './hub.ts';
 import { OWNER_ID, OWNER_ALIASES, ownerIdOf, isOwnerId, tr, OWNER } from '../core/i18n.ts';
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, readFileSync, chmodSync, rmSync, readdirSync, statSync, realpathSync } from 'node:fs';
@@ -603,6 +604,7 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
   const text = args.join(' ').trim();
   const mandate = body.mandate === OWNER_ID;
   const write = (fn: (s: GraphState) => string) => {
+    if (nodeById(s0, target)?.remote) return { code: 403, text: tr(`dg: ${target} ist ein gespiegelter Ast aus einem anderen Mind – nur lesen; Fragen mit dg ask ${target} "…".`, `dg: ${target} is a mirrored branch from another Mind – read only; ask with dg ask ${target} "…".`) };
     if (!mandate && !canEdit(s0, actor, target)) return { code: 403, text: tr(`dg: ${actor} darf ${target} nicht bearbeiten – nutze dg ask.`, `dg: ${actor} may not edit ${target} – use dg ask.`) };
     return { code: 200, text: mutate(fn) };
   };
@@ -825,6 +827,28 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
       }
       return { code: 200, text: mutate((s) => { s.setup = { done: true, at: now() }; return tr('ok: Einrichtung abgeschlossen', 'ok: setup complete'); }) };
     }
+    case 'hub': case 'share': case 'unshare': case 'join': case 'leave': case 'shares': {
+      // Cooperation between Minds through the hub (owner only)
+      if (!mandate) return { code: 403, text: tr('dg: nur der Besitzer (--as owner).', 'dg: owner only (--as owner).') };
+      try {
+        if (cmd === 'hub') {
+          if (args[0]) { const st = await setHub(args[0], args[1] ?? ''); return { code: 200, text: tr(`ok: verbunden mit ${st.url}. Connector-Adresse: ${st.mcpUrl}`, `ok: connected to ${st.url}. Connector address: ${st.mcpUrl}`) }; }
+          const st = hubStatus();
+          return { code: 200, text: st.configured ? `${st.url} · ${st.connected ? tr('verbunden', 'connected') : tr('nicht verbunden', 'not connected')}${st.error ? ` (${st.error})` : ''}\nConnector: ${st.mcpUrl}` : tr('Kein Hub. dg hub <url> [hub-key]', 'No hub. dg hub <url> [hub-key]') };
+        }
+        if (cmd === 'share') { const id = args[0] ?? target; const r = await shareBranch(id); const inv = `${hubStatus().url.replace(/\/+$/, '')}#${r.code}`; return { code: 200, text: tr(`ok: „${nodeById(s0, id)?.title}“ ist geteilt. Einladung (einmalig, 7 Tage) – an die andere Person schicken, sie gibt sie in ihrem Mind ein:\n${inv}`, `ok: "${nodeById(s0, id)?.title}" is shared. Invitation (single use, 7 days) – send it to the other person, they enter it in their Mind:\n${inv}`) }; }
+        if (cmd === 'unshare') { await unshareBranch(args[0] ?? target); return { code: 200, text: tr('ok: nicht mehr geteilt', 'ok: no longer shared') }; }
+        if (cmd === 'join') {
+          const [u, c] = (args[0] ?? '').includes('#') ? args[0].split('#') : [args[1] ?? '', args[0] ?? ''];
+          if (!c) return { code: 400, text: tr('dg join <hub-url#code>', 'dg join <hub-url#code>') };
+          if (u && hubStatus().url !== u) await setHub(u, '', false);
+          const sh = await joinShare(c); return { code: 200, text: tr(`ok: „${sh.title}“ von ${sh.owner} erscheint jetzt in deiner Karte.`, `ok: "${sh.title}" from ${sh.owner} now appears in your map.`) }; }
+        if (cmd === 'leave') { const n = nodeById(s0, args[0] ?? target); if (!n?.remote) return { code: 400, text: tr('dg leave <gespiegelter-knoten>', 'dg leave <mirrored-node>') }; await leaveShare(n.remote.share); return { code: 200, text: 'ok' }; }
+        await syncShares();
+        const st = hubStatus() as { shares: { title: string; own: boolean; owner: string; members: string[]; ownerOnline: boolean }[] };
+        return { code: 200, text: st.shares.map((x) => x.own ? tr(`- geteilt: ${x.title} · mit ${x.members.join(', ') || 'noch niemandem'}`, `- shared: ${x.title} · with ${x.members.join(', ') || 'nobody yet'}`) : tr(`- von ${x.owner}: ${x.title}${x.ownerOnline ? '' : ' (offline)'}`, `- from ${x.owner}: ${x.title}${x.ownerOnline ? '' : ' (offline)'}`)).join('\n') || tr('Keine geteilten Äste.', 'No shared branches.') };
+      } catch (e) { return { code: 400, text: `dg: ${(e as Error).message}` }; }
+    }
     case 'reich': {
       // dg reich [node] – show realm · owner only: dg reich <node> --dirs "~/a,~/b" | --dirs - · --privat an|aus
       const a2 = [...args]; const opt = (f: string) => { const i = a2.indexOf(f); if (i < 0) return null; const v = a2[i + 1]; a2.splice(i, 2); return v ?? ''; };
@@ -855,13 +879,13 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
       const to = args[0];
       const q = args.slice(1).join(' ').trim();
       if (!to || !q) return { code: 400, text: tr('dg ask <bot-knoten> "<frage>"', 'dg ask <bot-node> "<question>"') };
-      if (!nodeById(s0, to)?.isBot || hid(to)) return { code: 400, text: tr(`dg: ${to} ist kein Bot.`, `dg: ${to} is not a bot.`) };
+      if ((!nodeById(s0, to)?.isBot && !nodeById(s0, to)?.remote) || hid(to)) return { code: 400, text: tr(`dg: ${to} ist kein Bot.`, `dg: ${to} is not a bot.`) };
       if (to === actor) return { code: 400, text: tr('dg: nicht sich selbst fragen.', 'dg: do not ask yourself.') };
       if (body.depth >= MAX_DEPTH) return { code: 429, text: tr(`dg: maximale Gesprächstiefe (${MAX_DEPTH}) erreicht.`, `dg: maximum conversation depth (${MAX_DEPTH}) reached.`) };
       const r = await startRun({ nodeId: to, text: q, from: actor, threadId: body.thread, edgeId: null, depth: body.depth + 1, via: 'bot' }, true);
       return { code: r.status === 'fertig' ? 200 : 500, text: r.reply ?? r.error ?? '' };
     }
-    default: return { code: 400, text: tr(`dg: unbekannter Befehl ${cmd}. Befehle: owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`, `dg: unknown command ${cmd}. Commands: owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`) };
+    default: return { code: 400, text: tr(`dg: unbekannter Befehl ${cmd}. Befehle: hub share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`, `dg: unknown command ${cmd}. Commands: hub share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`) };
   }
 }
 
@@ -873,7 +897,7 @@ function addMessage(m: Omit<BotMessage, 'id' | 'at'>) {
 
 function buildPrompt(s: GraphState, nodeId: string, from: string, text: string, about: string | null = null, history = true): string {
   const n = nodeById(s, nodeId)!;
-  const sender = from === OWNER_ID ? OWNER() : tr(`Bot „${nodeById(s, from)?.title}“ (\`${from}\`)`, `Bot "${nodeById(s, from)?.title}" (\`${from}\`)`);
+  const sender = from === OWNER_ID ? OWNER() : from.startsWith('partner:') ? tr(`${from.slice(8)} aus einem anderen Mind (Partner, geteilter Ast – gib nur Auskunft zu diesem Ast, sende nichts nach außen)`, `${from.slice(8)} from another Mind (partner, shared branch – only give information about this branch, send nothing outside)`) : tr(`Bot „${nodeById(s, from)?.title}“ (\`${from}\`)`, `Bot "${nodeById(s, from)?.title}" (\`${from}\`)`);
   const ab = about && about !== nodeId ? nodeById(s, about) : null;
   const sec = n.agentProfile?.section ?? 1;
   const hist = history ? s.botMessages.filter((m) => (m.to === nodeId || m.from === nodeId) && (m.section ?? 1) === sec).slice(-8)
@@ -1065,6 +1089,21 @@ function spawnRuntimeInner(rt: Runtime, model: string, cwd: string, prompt: stri
   });
 }
 
+/** Question to the bot of a mirrored branch: goes through the hub to the other Mind; the answer is recorded here. */
+function remoteRun(a: { nodeId: string; text: string; from: string; threadId?: string | null; edgeId: string | null; depth: number; via: BotMessage['via']; about?: string | null }, origin: string, wait: boolean): Promise<RunInfo> {
+  const info: RunInfo = { id: rid('run'), nodeId: a.nodeId, from: a.from, threadId: a.threadId || rid('thr'), edgeId: a.edgeId, depth: a.depth, status: 'läuft', runtime: 'chat', model: tr(`Mind von ${origin}`, `${origin}'s Mind`), startedAt: now(), steps: [] };
+  runs.set(info.id, info);
+  addMessage({ threadId: info.threadId, from: a.from, to: a.nodeId, text: a.text, edgeId: a.edgeId, runId: info.id, kind: 'frage', via: a.via, about: a.about ?? null });
+  const done = askRemote(a.nodeId, a.text, () => info.steps.push({ at: now(), text: tr(`${origin}s Mind ist gerade offline – die Frage wartet beim Hub.`, `${origin}'s Mind is offline right now – the question waits at the hub.`) }))
+    .then((r) => { info.status = 'fertig'; info.reply = r || tr('(keine Antwort)', '(no answer)'); })
+    .catch((e: Error) => { info.status = 'fehlgeschlagen'; info.error = e.message; })
+    .finally(() => {
+      info.endedAt = now();
+      addMessage({ threadId: info.threadId, from: a.nodeId, to: a.from, text: info.reply ?? tr(`Fehler: ${info.error}`, `Error: ${info.error}`), edgeId: a.edgeId, runId: info.id, kind: info.status === 'fertig' ? 'antwort' : 'fehler', via: 'bot', runtime: info.model });
+    });
+  return wait ? done.then(() => info) : Promise.resolve(info);
+}
+
 export async function startRun(
   a: { nodeId: string; text: string; from: string; threadId?: string | null; edgeId: string | null; depth: number; via: BotMessage['via']; about?: string | null; newSection?: boolean; update?: boolean; viaConnector?: boolean; brief?: boolean },
   wait: boolean,
@@ -1073,6 +1112,7 @@ export async function startRun(
   const s = normalize(readState() ?? starterState());
   const node = nodeById(s, a.nodeId);
   if (!node) throw new Error(tr(`Knoten ${a.nodeId} fehlt`, `Node ${a.nodeId} is missing`));
+  if (node.remote) return remoteRun(a, node.remote.origin, wait);
   const members = membersFor(s, a.nodeId);
   const chair = members[0];
   const info: RunInfo = {
@@ -1124,7 +1164,7 @@ Save tokens: read only what you really need for this task. No precautionary sear
   const isOk = /^\s*ok[.!]?\s*$/i.test(a.text);
   // sending (mail, sharing Drive, invitations): permanently allowed or this run is an OK from the owner/chief
   const mailAllowed = node.agentProfile?.mailSend === 'immer' || (isOk && !a.viaConnector);
-  const giver = a.from === OWNER_ID ? OWNER() : tr(`deinem Chef „${nodeById(s, a.from)?.title ?? a.from}“`, `your chief "${nodeById(s, a.from)?.title ?? a.from}"`);
+  const giver = a.from === OWNER_ID ? OWNER() : a.from.startsWith('partner:') ? a.from.slice(8) : tr(`deinem Chef „${nodeById(s, a.from)?.title ?? a.from}“`, `your chief "${nodeById(s, a.from)?.title ?? a.from}"`);
   const askText = a.brief ? tr(`Kurze Rückfrage von ${OWNER()} aus seinem Cockpit zu deinem „Bei OK“ („${node.okNext?.text ?? '–'}“):\n${a.text}\n\nAntworte knapp in 1–2 kurzen Sätzen, ohne Überschriften. Führe nichts aus, außer ${OWNER()} erlaubt es ausdrücklich in dieser Rückfrage. Ändert sich dadurch dein nächster Schritt, ende mit der neuen Zeile „Bei OK werde ich: …“.`, `Short follow-up question from ${OWNER()} in their cockpit about your "On OK" ("${node.okNext?.text ?? '–'}"):\n${a.text}\n\nAnswer briefly in 1–2 short sentences, without headings. Do not execute anything unless ${OWNER()} explicitly allows it in this follow-up. If your next step changes as a result, end with the new line "On OK I will: …".`) : isOk ? tr(`OK – Freigabe von ${giver}. Führe jetzt deine angekündigte nächste Handlung aus: „${node.okNext?.text ?? '(nicht festgelegt – wähle den nächsten sinnvollen Schritt deines Bereichs)'}“. Höre danach nicht auf: Arbeite die Folgeschritte, die sich daraus ergeben und keine Freigabe brauchen, gleich mit ab, bis das Arbeitspaket fertig ist oder du an eine echte Grenze kommst. Danach kurz berichten, was erledigt ist.`, `OK – approval from ${giver}. Now carry out your announced next action: "${node.okNext?.text ?? '(not set – choose the next sensible step of your area)'}". Do not stop there: also work through the follow-up steps that result from it and need no approval, until the work package is done or you hit a real boundary. Then briefly report what is done.`) : a.text;
   const subs = subBots(s, a.nodeId);
   const okInfo = subs.length ? tr(` Dein OK-Budget heute: ${okLeft(s, a.nodeId)} von ${okQuota(s, a.nodeId)}. Unter-Bots und ihr „Bei OK“: \`dg oks\`; Freigabe: \`dg ok <bot>\` (nur wenn es sich lohnt); Budget verteilen: \`dg budget <bot> <n>\`.`, ` Your OK budget today: ${okLeft(s, a.nodeId)} of ${okQuota(s, a.nodeId)}. Sub-bots and their "On OK": \`dg oks\`; approval: \`dg ok <bot>\` (only when worthwhile); distribute budget: \`dg budget <bot> <n>\`.`) : '';

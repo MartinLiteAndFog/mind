@@ -38,6 +38,10 @@ export interface GraphNode {
   workDirs?: string[];
   /** Private branch: invisible to bots outside this branch (search, read, folders). */
   private?: boolean;
+  /** Mirror of a branch another Mind shares with us (read-only, refreshed by the hub). */
+  remote?: { share: string; origin: string; origId: string; bot: boolean; online: boolean; at: string; files?: string[]; msgs?: { at: string; from: string; text: string }[] };
+  /** This branch is shared through the hub (share id). */
+  sharedAs?: string;
 }
 
 export interface GraphEdge {
