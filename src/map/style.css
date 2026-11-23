@@ -398,3 +398,12 @@ body.offline #map { opacity:.55; }
 /* mirrored branch from another Mind */
 #pop .mirror{border:1px dashed #9aa;border-radius:8px;padding:8px 10px;margin:4px 0 10px;font-size:12.5px;background:rgba(120,140,150,.06)}
 #pop .mirror .mut{margin-top:3px}
+/* cleanup preview + node archive */
+.cu-item{border-top:1px solid rgba(0,0,0,.08);padding:8px 0}
+.cu-item.off{opacity:.45}
+.cu-cols{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:4px 0;font-size:12.5px}
+.cu-old{white-space:pre-wrap;color:#777;max-height:180px;overflow:auto}
+.cu-new{max-height:180px;overflow:auto}
+#pop details.archive{margin-top:10px;font-size:12.5px}
+#pop details.archive summary{cursor:pointer;color:#777}
+#pop details.archive .arch{border-left:2px solid #ddd;padding-left:8px;margin:6px 0}

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, readFileSync, chmodSync, rmSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { join, resolve, relative } from 'node:path';
 import { tmpdir } from 'node:os';
+import { zepEnabled, personEnsure, personAdd, personContext, personDelete, parseTalk, legacyDelete } from './zep.ts';
 import { DATA_DIR, readState, writeState } from './store.ts';
 import { normalize } from '../core/io.ts';
 import { starterState } from '../core/seed.ts';
@@ -534,8 +535,11 @@ export function workDirsOf(s: GraphState, id: string): string[] {
 }
 
 /** Realm = own node folder + folders of all child nodes + working folders. */
-export function reichOf(s: GraphState, id: string, withWorkDirs = true): { nodes: string[]; work: string[] } {
-  return { nodes: [id, ...descendants(s, id)].map((x) => realOr(resolve(nodeDir(x)))), work: withWorkDirs ? workDirsOf(s, id) : [] };
+export function reichOf(s: GraphState, id: string, withWorkDirs = true): { nodes: string[]; work: string[]; read: string[] } {
+  // read grants (own and inherited), never into a private branch the bot does not belong to
+  const grants = withWorkDirs ? [...new Set([...ancestors(s, id), id].flatMap((x) => nodeById(s, x)?.readGrants ?? []))].filter((g) => nodeById(s, g) && !hiddenFor(s, id, g)) : [];
+  const read = grants.flatMap((g) => [g, ...descendants(s, g)].filter((x) => !hiddenFor(s, id, x))).map((x) => realOr(resolve(nodeDir(x))));
+  return { nodes: [id, ...descendants(s, id)].map((x) => realOr(resolve(nodeDir(x)))), work: withWorkDirs ? workDirsOf(s, id) : [], read: [...new Set(read)] };
 }
 
 /** Block everything under root except the allowed paths (and their parent folders as passage). */
@@ -853,17 +857,63 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
         return { code: 200, text: st.shares.map((x) => x.own ? tr(`- geteilt: ${x.title} · mit ${x.members.join(', ') || 'noch niemandem'}`, `- shared: ${x.title} · with ${x.members.join(', ') || 'nobody yet'}`) : tr(`- von ${x.owner}: ${x.title}${x.ownerOnline ? '' : ' (offline)'}`, `- from ${x.owner}: ${x.title}${x.ownerOnline ? '' : ' (offline)'}`)).join('\n') || tr('Keine geteilten Äste.', 'No shared branches.') };
       } catch (e) { return { code: 400, text: `dg: ${(e as Error).message}` }; }
     }
+    case 'zep': {
+      // dg zep on "<Name>" (owner) · talk <file> · note "<text>" · ask · reset (owner) – memory of the person this node stands for
+      const sub = args[0] ?? 'ask'; const rest = args.slice(1);
+      const n = nodeById(s0, target)!;
+      if (!zepEnabled()) return { code: 400, text: tr('dg: ZEP_API_KEY fehlt beim Mind-Server.', 'dg: ZEP_API_KEY missing on the Mind server.') };
+      if (!mandate && !canEdit(s0, actor, target)) return { code: 403, text: tr(`dg: kein Zugriff auf das Gedächtnis von ${n.title}.`, `dg: no access to the memory of ${n.title}.`) };
+      try {
+        if (sub === 'on') {
+          if (!mandate) return { code: 403, text: tr(`dg: Gedächtnis einschalten nur ${OWNER()}.`, `dg: only ${OWNER()} switches memory on.`) };
+          const name = rest.join(' ').trim() || n.title.replace(/\s*\(.*\)\s*$/, '');
+          await personEnsure(target, name);
+          mutate((s) => { const x = nodeById(s, target)!; x.memory = { name, since: now() }; touch(s, target, 'bot', tr(`Gedächtnis (Zep) für ${name} eingeschaltet.`, `Memory (Zep) for ${name} switched on.`)); });
+          return { code: 200, text: tr(`ok: ${n.title} hat jetzt ein Gedächtnis für ${name}.`, `ok: ${n.title} now has a memory for ${name}.`) };
+        }
+        if (!n.memory) return { code: 400, text: tr(`dg: ${n.title} hat kein Gedächtnis – ${OWNER()} schaltet es mit dg zep on "<Name>" ein.`, `dg: ${n.title} has no memory – ${OWNER()} switches it on with dg zep on "<name>".`) };
+        if (sub === 'talk') {
+          const r = readNodeFile(target, rest.join(' '));
+          if (!r.ok) return { code: 400, text: r.text };
+          const msgs = parseTalk(r.text, n.memory.name, OWNER());
+          if (!msgs.length) return { code: 400, text: tr('dg: keine Zeilen „Name: …“ gefunden.', 'dg: no lines "Name: …" found.') };
+          const persons = msgs.filter((m) => m.role === 'user').length;
+          await personAdd(target, n.memory.name, msgs);
+          mutate((s) => touch(s, target, 'datei', tr(`${actor}: Gespräch ${rest.join(' ')} ins Gedächtnis übernommen (${msgs.length} Aussagen, ${persons} von ${n.memory!.name}).`, `${actor}: conversation ${rest.join(' ')} added to memory (${msgs.length} statements, ${persons} by ${n.memory!.name}).`)));
+          return { code: 200, text: tr(`ok: ${msgs.length} Aussagen gespeichert (${persons} von ${n.memory.name}, ${msgs.length - persons} von anderen).`, `ok: ${msgs.length} statements stored (${persons} by ${n.memory.name}, ${msgs.length - persons} by others).`) };
+        }
+        if (sub === 'note') {
+          const t = rest.join(' ').trim(); if (!t) return { code: 400, text: 'dg zep note "<text>"' };
+          await personAdd(target, n.memory.name, [{ role: 'assistant', name: tr(`${OWNER()} (Notiz)`, `${OWNER()} (note)`), content: t.slice(0, 4000) }]);
+          return { code: 200, text: tr('ok: Notiz im Gedächtnis', 'ok: note stored in memory') };
+        }
+        if (sub === 'reset') {
+          if (!mandate) return { code: 403, text: tr(`dg: nur ${OWNER()}.`, `dg: only ${OWNER()}.`) };
+          await personDelete(target).catch(() => {}); await personEnsure(target, n.memory.name);
+          return { code: 200, text: tr(`ok: Gedächtnis von ${n.memory.name} geleert.`, `ok: memory of ${n.memory.name} cleared.`) };
+        }
+        const c = await personContext(target);
+        return { code: 200, text: c || tr('(Gedächtnis noch leer)', '(memory still empty)') };
+      } catch (e) { return { code: 502, text: `dg: Zep – ${(e as Error).message}` }; }
+    }
     case 'reich': {
       // dg reich [node] – show realm · owner only: dg reich <node> --dirs "~/a,~/b" | --dirs - · --privat an|aus
       const a2 = [...args]; const opt = (f: string) => { const i = a2.indexOf(f); if (i < 0) return null; const v = a2[i + 1]; a2.splice(i, 2); return v ?? ''; };
-      const dirs = opt('--dirs'); const priv = opt('--privat') ?? opt('--private');
+      const dirs = opt('--dirs'); const priv = opt('--privat') ?? opt('--private'); const rd = opt('--read');
       const id = a2[0] ?? target;
       if (!nodeById(s0, id) || hid(id)) return gone(id);
+      if (rd !== null) {
+        if (!mandate) return { code: 403, text: tr(`dg: Lesefreigaben vergibt nur ${OWNER()} – frag mit dg request.`, `dg: read grants are given by ${OWNER()} only – ask with dg request.`) };
+        const l = rd === '-' ? [] : rd.split(',').map((x) => x.trim()).filter(Boolean);
+        const bad = l.find((x) => !nodeById(s0, x)); if (bad) return gone(bad);
+        mutate((s) => { const n = nodeById(s, id)!; if (l.length) n.readGrants = l; else delete n.readGrants; touch(s, id, 'bot', tr(`${actor}: Lesefreigabe ${l.join(', ') || 'entfernt'}.`, `${actor}: read grant ${l.join(', ') || 'removed'}.`)); });
+      }
       if (dirs !== null || priv !== null) {
         if (!mandate) return { code: 403, text: tr(`dg: Arbeitsordner und privat stellt nur ${OWNER()} ein – frag mit dg request.`, `dg: working folders and private are set by ${OWNER()} only – ask with dg request.`) };
         mutate((s) => { const n = nodeById(s, id)!; if (dirs !== null) { const l = dirs === '-' ? [] : dirs.split(',').map((x) => x.trim()).filter(Boolean); if (l.length) n.workDirs = l; else delete n.workDirs; } if (priv !== null) { if (/^(an|on|ja|1)$/i.test(priv)) n.private = true; else delete n.private; } touch(s, id, 'bot', tr(`${actor}: Reich angepasst (${(n.workDirs ?? []).join(', ') || 'keine Arbeitsordner'}${n.private ? ' · privat' : ''}).`, `${actor}: realm adjusted (${(n.workDirs ?? []).join(', ') || 'no working folders'}${n.private ? ' · private' : ''}).`)); return ''; });
       }
       const s1 = normalize(readState() ?? starterState()); const r = reichOf(s1, id); const n = nodeById(s1, id)!;
+      if (r.read.length) return { code: 200, text: tr(`Reich von ${n.title}: ${r.nodes.length} Knotenordner · Arbeitsordner: ${r.work.join(', ') || 'keine'} · Lesefreigabe: ${(n.readGrants ?? []).join(', ') || 'geerbt'} (${r.read.length} Ordner, nur lesen)`, `Realm of ${n.title}: ${r.nodes.length} node folders · working folders: ${r.work.join(', ') || 'none'} · read grant: ${(n.readGrants ?? []).join(', ') || 'inherited'} (${r.read.length} folders, read only)`) };
       return { code: 200, text: tr(`Reich von ${n.title}${n.private ? ' (privat)' : ''}:\n- Knotenordner: ${r.nodes.length} (eigener + Unterknoten)\n- Arbeitsordner: ${r.work.join(', ') || 'keine'}${n.workDirs?.length ? `\n- davon eigene: ${n.workDirs.join(', ')}` : ''}`, `Realm of ${n.title}${n.private ? ' (private)' : ''}:\n- Node folders: ${r.nodes.length} (own + child nodes)\n- Working folders: ${r.work.join(', ') || 'none'}${n.workDirs?.length ? `\n- of which own: ${n.workDirs.join(', ')}` : ''}`) };
     }
     case 'request': {
@@ -889,7 +939,7 @@ export async function dgCommand(body: { cmd: string; args: string[]; node: strin
       const r = await startRun({ nodeId: to, text: q, from: actor, threadId: body.thread, edgeId: null, depth: body.depth + 1, via: 'bot' }, true);
       return { code: r.status === 'fertig' ? 200 : 500, text: r.reply ?? r.error ?? '' };
     }
-    default: return { code: 400, text: tr(`dg: unbekannter Befehl ${cmd}. Befehle: hub connect contacts disconnect share-with share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`, `dg: unknown command ${cmd}. Commands: hub connect contacts disconnect share-with share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`) };
+    default: return { code: 400, text: tr(`dg: unbekannter Befehl ${cmd}. Befehle: zep hub connect contacts disconnect share-with share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`, `dg: unknown command ${cmd}. Commands: zep hub connect contacts disconnect share-with share unshare join leave shares owner rules set-rules lang set-model setup-done reich request show tree search messages files read bots folder set-summary set-title add-open close-open add-child move set-plane note set-todos instruction set-instruction update ask set-ok oks ok budget block unblock cockpit sweep fill-ok blockers auto remove restore decide decisions`) };
   }
 }
 
@@ -971,7 +1021,7 @@ function claudeSubscriptionOk(): Promise<{ ok: boolean; info: string }> {
   });
 }
 
-async function spawnRuntime(rt: Runtime, model: string, cwd: string, prompt: string, env: NodeJS.ProcessEnv, onStep: (t: string) => void = () => {}, onSession: (id: string) => void = () => {}): Promise<string> {
+export async function spawnRuntime(rt: Runtime, model: string, cwd: string, prompt: string, env: NodeJS.ProcessEnv, onStep: (t: string) => void = () => {}, onSession: (id: string) => void = () => {}): Promise<string> {
   if (rt === 'claude') {
     const a = await claudeSubscriptionOk();
     if (!a.ok) throw new Error(tr(`Claude Code ist nicht mit einem Abo angemeldet (${a.info}) – kein API-Lauf. Im Terminal: claude auth login (claude.ai-Konto wählen).`, `Claude Code is not signed in with a subscription (${a.info}) – no API run. In the terminal: claude auth login (choose the claude.ai account).`));
@@ -1010,7 +1060,7 @@ function spawnRuntimeInner(rt: Runtime, model: string, cwd: string, prompt: stri
       const webTools = ['WebSearch', 'WebFetch', 'mcp__claude_ai_Gmail', 'mcp__claude_ai_Google_Drive', 'mcp__claude_ai_Google_Docs', 'mcp__claude_ai_Google_Sheets', 'mcp__claude_ai_Google_Calendar'];
       const deny = [...neverTools, ...(mailOk ? [] : outward), ...denies.flatMap((d) => [`Read(${rule(d)})`, `Edit(${rule(d)})`])];
       // Bash runs in the sandbox: free within the realm (Python, Node, git, tests …), no writing outside, blocked folders not readable
-      const settings = { sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowLocalBinding: true }, filesystem: { denyRead: denies } } };
+      const settings = { sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowLocalBinding: true, allowedDomains: ['*'] }, filesystem: { denyRead: denies } } };
       const tools = ['Bash', 'Read', 'Glob', 'Grep', ...webTools, ...(ro ? [] : writable.map((d) => `Edit(${rule(d)})`))];
       argv = ['-p', prompt, '--output-format', 'stream-json', '--verbose',
         // lean: no global plugins/hooks/skills; the node's CLAUDE.md still applies
@@ -1149,8 +1199,9 @@ export async function startRun(
   // direct order from the owner: may change anything in the graph and work on the app code.
   const mandate = a.from === OWNER_ID;
   // realm: own node + child nodes + (inherited) working folders. Via the online connector only the own folder.
-  const reich = a.viaConnector ? { nodes: [realOr(resolve(dir))], work: [] as string[] } : reichOf(s, a.nodeId);
-  const denies = readDenies([...reich.nodes, ...reich.work]);
+  const reich = a.viaConnector ? { nodes: [realOr(resolve(dir))], work: [] as string[], read: [] as string[] } : reichOf(s, a.nodeId);
+  const denies = readDenies([...reich.nodes, ...reich.work, ...reich.read]);
+  const readNote = reich.read.length ? tr(`\nLesefreigabe (nur lesen, nicht schreiben): ${reich.read.map((d) => `\`${d}\``).join(', ')}.`, `\nRead grant (read only, no writing): ${reich.read.map((d) => `\`${d}\``).join(', ')}.`) : '';
   const subIds = descendants(s, a.nodeId);
   const accessNote = tr(`## Dein Reich (hier darfst du alles)
 Dein Knoten${subIds.length ? ` und alle ${subIds.length} Unterknoten (${subIds.slice(0, 8).map((x) => `\`${x}\``).join(', ')}${subIds.length > 8 ? ', …' : ''})` : ''} mit ihren Ordnern unter ${NODES_DIR}${reich.work.length ? `, dazu die Arbeitsordner ${reich.work.map((d) => `\`${d}\``).join(', ')}` : ''}.
@@ -1176,7 +1227,14 @@ Save tokens: read only what you really need for this task. No precautionary sear
   const okInfo = subs.length ? tr(` Dein OK-Budget heute: ${okLeft(s, a.nodeId)} von ${okQuota(s, a.nodeId)}. Unter-Bots und ihr „Bei OK“: \`dg oks\`; Freigabe: \`dg ok <bot>\` (nur wenn es sich lohnt); Budget verteilen: \`dg budget <bot> <n>\`.`, ` Your OK budget today: ${okLeft(s, a.nodeId)} of ${okQuota(s, a.nodeId)}. Sub-bots and their "On OK": \`dg oks\`; approval: \`dg ok <bot>\` (only when worthwhile); distribute budget: \`dg budget <bot> <n>\`.`) : '';
   const mailNote = mailAllowed ? (node.agentProfile?.mailSend === 'immer' ? tr('E-Mails senden ist für dich dauerhaft erlaubt – sorgfältig, nur was zu deinem Auftrag gehört.', 'Sending e-mails is permanently allowed for you – carefully, only what belongs to your task.') : tr('Mit diesem OK darfst du genau die im „Bei OK“ angekündigten E-Mails/Einladungen senden – nichts anderes.', 'With this OK you may send exactly the e-mails/invitations announced in your "On OK" – nothing else.')) : tr(`E-Mails NIE senden (auch nicht antworten/weiterleiten/teilen/einladen): nur als Entwurf anlegen (create_draft) und als „Bei OK werde ich: Mail an … senden“ ankündigen – gesendet wird erst nach OK von ${OWNER()} oder deinem Chef.`, `NEVER send e-mails (also no replying/forwarding/sharing/inviting): only create a draft (create_draft) and announce it as "On OK I will: send mail to …" – it is sent only after an OK from ${OWNER()} or your chief.`);
   const okRule = tr(`\n\nAbschluss jeder Antwort: eine eigene letzte Zeile „Bei OK werde ich: <nächste Handlung, max. 8 Wörter>“ – das nächste größere Arbeitspaket oder die nächste freigabepflichtige Handlung, die du ausführst, sobald ${OWNER()} oder dein Chef OK sagt. Kein Kleinschritt. Arbeitsweise: Arbeite selbstständig und am Stück. Alles in deinem Bereich, was sich rückgängig machen lässt, erledigst du sofort und ohne Rückfrage, auch mehrere Schritte hintereinander: lesen, recherchieren, prüfen, rechnen, Dateien in deinem Knotenordner anlegen und ändern, Entwürfe schreiben, deinen Knoten pflegen (Kurzlage, To-dos, offene Punkte, Entscheidungen). Kündige solche Schritte nicht als „Bei OK“ an und frage nicht wegen Kleinigkeiten – mach sie. Ein OK brauchst du nur für: Versand nach außen (Mails, Teilen, Einladungen, Posts), Geld, Zahlungen und Orders, Live-Systeme und Deploys, Löschen oder Überschreiben von Daten außerhalb deines Knotenordners, Änderungen außerhalb deines Bereichs und Richtungsentscheidungen, die ${OWNER()} treffen muss. Unsichere Annahmen hältst du als Annahme fest (\`dg decide --kind annahme\`) und arbeitest weiter, statt zu warten. Du hast Web (WebSearch/WebFetch) und dein Google-Konto (Gmail lesen/Entwürfe, Drive, Docs, Sheets, Kalender lesen). ${mailNote} Human Blocker: Kommst du nur mit ${OWNER()} weiter (Entscheidung, Zugang, Daten, Login, Zahlung …), setze \`dg block "<was ${OWNER()} tun muss>"\`; ist es erledigt, \`dg unblock\`. Blocker deiner Unter-Bots siehst du in \`dg oks\` – ${OWNER()} sieht alle gesammelt. Entscheidungen (Strategie, Parameter, Vorgehen – von dir oder ${OWNER()}) hältst du mit \`dg decide "<was>" "<warum, mit Beleg>"\` fest; revidierst du eine frühere, mit \`--kind korrektur --refers <id>\` (IDs: \`dg decisions\`).${okInfo}`, `\n\nEnd of every answer: a separate last line "On OK I will: <next action, max. 8 words>" – the next larger work package or the next action that needs approval, which you carry out as soon as ${OWNER()} or your chief says OK. No small steps. Way of working: work independently and in one go. Everything in your area that can be undone you do immediately and without asking, also several steps in a row: reading, researching, checking, calculating, creating and changing files in your node folder, writing drafts, maintaining your node (short status, to-dos, open points, decisions). Do not announce such steps as "On OK" and do not ask about trivia – just do them. You need an OK only for: sending to the outside (mails, sharing, invitations, posts), money, payments and orders, live systems and deploys, deleting or overwriting data outside your node folder, changes outside your area and strategic decisions that ${OWNER()} has to make. You record uncertain assumptions as an assumption (\`dg decide --kind annahme\`) and keep working instead of waiting. You have web (WebSearch/WebFetch) and your Google account (read Gmail/drafts, Drive, Docs, Sheets, read calendar). ${mailNote} Human Blocker: if you can only continue with ${OWNER()} (decision, access, data, login, payment …), set \`dg block "<what ${OWNER()} needs to do>"\`; once it is done, \`dg unblock\`. You see the blockers of your sub-bots in \`dg oks\` – ${OWNER()} sees all of them collected. You record decisions (strategy, parameters, approach – by you or ${OWNER()}) with \`dg decide "<what>" "<why, with evidence>"\`; if you revise an earlier one, use \`--kind korrektur --refers <id>\` (IDs: \`dg decisions\`).${okInfo}`);
-  const base = `${buildPrompt(s, a.nodeId, a.from, askText, a.about ?? null, !session)}${instr}\n\n${accessNote}${okRule}${closing}`;
+  // Long-term memory of the contact person (Zep): fetched before the answer; stored only what the bot assigns explicitly (dg zep talk/note)
+  const mem = node.memory && zepEnabled() ? node.memory : null;
+  let zepCtx = '';
+  if (mem && !a.brief) { try { zepCtx = await personContext(a.nodeId); } catch (e) { console.warn('zep:', (e as Error).message); } }
+  const memNote = mem ? tr(`\n\n## Gedächtnis zu ${mem.name} (Zep)
+Dieser Knoten steht für die Person ${mem.name}. Gibt dir ${OWNER()} ein Gespräch mit ${mem.name} (Text, Diktat oder Datei), dann: 1) speichere es wörtlich als \`gespraeche/<JJJJ-MM-TT>-<thema>.md\` in deinem Ordner, Zeilen im Format „${mem.name.split(' ')[0]}: …“ und „${OWNER()}: …“ (ordne jede Aussage dem richtigen Sprecher zu; bei Zusammenfassungen schreibe, wer was gesagt hat); 2) übertrage es mit \`dg zep talk <datei>\` ins Gedächtnis. Eigene Beobachtungen oder Infos über ${mem.name} aus anderen Quellen: \`dg zep note "<text>"\`. Gedächtnis abfragen: \`dg zep ask\`. Speichere keine Arbeitsaufträge von ${OWNER()} an dich als Gespräch.`, `\n\n## Memory of ${mem.name} (Zep)
+This node stands for the person ${mem.name}. When ${OWNER()} gives you a conversation with ${mem.name} (text, dictation or file): 1) save it verbatim as \`gespraeche/<YYYY-MM-DD>-<topic>.md\` in your folder, lines formatted "${mem.name.split(' ')[0]}: …" and "${OWNER()}: …" (assign every statement to the right speaker; for summaries, write who said what); 2) transfer it to the memory with \`dg zep talk <file>\`. Your own observations or information about ${mem.name} from other sources: \`dg zep note "<text>"\`. Query the memory: \`dg zep ask\`. Do not store ${OWNER()}'s work instructions to you as a conversation.`) : '';
+  const base = `${zepCtx ? tr(`Gedächtnis (Zep) zu ${mem!.name} und euren Absprachen:\n${zepCtx}\n\n`, `Memory (Zep) of ${mem!.name} and your agreements:\n${zepCtx}\n\n`) : ''}${buildPrompt(s, a.nodeId, a.from, askText, a.about ?? null, !session)}${instr}\n\n${accessNote}${readNote}${memNote}${okRule}${closing}`;
   let newSession: string | null = null;
   let usedLabel = label(chair);
 

@@ -543,7 +543,7 @@ function modelHead(id: string) {
   const hasChat = ms.some((m) => m.runtime === 'chat');
   const win = `<span class="ic" data-a="big" title="${big ? tr('Verkleinern', 'Make smaller') : tr('Groß ansehen', 'View large')}">${big ? '⤡' : '⤢'}</span><span class="ic" data-a="nmenu" title="${tr('Mehr', 'More')}">⋯</span><span class="ic" data-a="min" title="${minimized ? tr('Wieder öffnen', 'Reopen') : tr('Minimieren', 'Minimize')}">${minimized ? '▢' : '–'}</span><span class="ic" data-a="close" title="${tr('Schließen (Esc)', 'Close (Esc)')}">×</span>`;
   // Row 1: name + window buttons · row 2: models (full width) + bot actions
-  return `<div class="mhead mh2"><div class="mrow1"><span class="mtitle" data-rename="${esc(id)}" title="${tr('Doppelklick: umbenennen', 'Double-click: rename')}">${esc(nodeById(S(), id)?.title)}</span><span class="sp"></span>${win}</div><div class="mrow2"><span class="dd-btn" data-a="mset" title="${esc(ms.map(mlabel).join(' + '))} – ${tr('Modell, Denkstufe, Zugriff', 'model, reasoning level, access')}">${ms.map(short).map(esc).join(' + ')}${ms.length ? `<i class="eff">· ${esc(EFFORTS().find((e) => e[0] === effortOf(id))?.[1] ?? '')}${nodeById(S(), id)?.private ? tr(' · privat', ' · private') : ''}</i>` : ''} ${CHEV}</span><span class="ic plus" data-a="mmore" title="${tr('weiteres Modell (Abstimmung)', 'another model (vote)')}">+</span>${hasChat ? `<span class="where chat" title="${tr('Dieser Bot arbeitet im Chat: Aufträge warten, bis du sie dort abholst', 'This bot works in the chat: tasks wait until you pick them up there')}">Chat</span><span class="ic" data-a="open-chat" title="${tr('Chat öffnen', 'Open chat')}">↗</span>` : ms.some((m) => m.runtime === 'claude' || m.runtime === 'codex') ? `<span class="where mac" title="${tr('Dieser Bot arbeitet selbst auf deinem Mac (dein Abo). Hier im Fenster mit ihm sprechen – Mikrofon in der Mind-App.', 'This bot works on its own on your Mac (your subscription). Talk to it here in the window – microphone in the Mind app.')}">Mac</span>` : ''}<span class="sp"></span><span class="ic act" data-a="update" title="${tr('Aktualisieren: Lage prüfen, Daten und Arbeitsanweisung pflegen, Unter-Bots anstoßen', 'Update: check the situation, maintain data and work instruction, nudge sub-bots')}">↻</span><span class="ic ${nodeMenu === 'instr' ? 'on' : ''}" data-a="instr" title="${tr('Arbeitsanweisung dieses Bereichs', 'Work instruction of this area')}">≡</span></div></div>`;
+  return `<div class="mhead mh2"><div class="mrow1"><span class="mtitle" data-rename="${esc(id)}" title="${tr('Doppelklick: umbenennen', 'Double-click: rename')}">${esc(nodeById(S(), id)?.title)}</span><span class="sp"></span>${win}</div><div class="mrow2"><span class="dd-btn" data-a="mset" title="${esc(ms.map(mlabel).join(' + '))} – ${tr('Modell, Denkstufe, Zugriff', 'model, reasoning level, access')}">${ms.map(short).map(esc).join(' + ')}${ms.length ? `<i class="eff">· ${esc(EFFORTS().find((e) => e[0] === effortOf(id))?.[1] ?? '')}${nodeById(S(), id)?.private ? tr(' · privat', ' · private') : ''}</i>` : ''} ${CHEV}</span><span class="ic plus" data-a="mmore" title="${tr('weiteres Modell (Abstimmung)', 'another model (vote)')}">+</span>${hasChat ? `<span class="where chat" title="${tr('Dieser Bot arbeitet im Chat: Aufträge warten, bis du sie dort abholst', 'This bot works in the chat: tasks wait until you pick them up there')}">Chat</span><span class="ic" data-a="open-chat" title="${tr('Chat öffnen', 'Open chat')}">↗</span>` : ms.some((m) => m.runtime === 'claude' || m.runtime === 'codex') ? `<span class="where mac" title="${tr('Dieser Bot arbeitet selbst auf deinem Mac (dein Abo). Hier im Fenster mit ihm sprechen – Mikrofon in der Mind-App.', 'This bot works on its own on your Mac (your subscription). Talk to it here in the window – microphone in the Mind app.')}">Mac</span><span class="ic" data-a="open-chat" title="${nodeById(S(), id)?.agentProfile?.chatUrl ? tr('Gespeicherten Chat dieses Bots öffnen', "Open this bot's saved chat") : tr(`Mit diesem Bot im ${ms.every((m) => m.runtime === 'codex') ? 'ChatGPT' : 'Claude'}-Chat weiterarbeiten (Start-Auftrag wird mitgegeben)`, `Continue with this bot in ${ms.every((m) => m.runtime === 'codex') ? 'ChatGPT' : 'Claude'} chat (start task included)`)}">↗</span>` : ''}<span class="sp"></span>${id === root(S()) ? `<span class="ic act" data-a="cleanup" title="${tr('Aufräumen: Zusammenfassungen und Kurzlagen verdichten, Erledigtes schließen, Doppeltes zusammenführen – mit Vorschau', 'Tidy up: condense summaries and short status, close finished items, merge duplicates – with preview')}">🧹</span>` : ''}<span class="ic act" data-a="update" title="${tr('Aktualisieren: Lage prüfen, Daten und Arbeitsanweisung pflegen, Unter-Bots anstoßen', 'Update: check the situation, maintain data and work instruction, nudge sub-bots')}">↻</span><span class="ic ${nodeMenu === 'instr' ? 'on' : ''}" data-a="instr" title="${tr('Arbeitsanweisung dieses Bereichs', 'Work instruction of this area')}">≡</span></div></div>`;
 }
 
 function modelMenuHtml(id: string) {
@@ -662,7 +662,8 @@ async function openChat(nodeId: string, key?: string) {
   const s = S();
   const n = nodeById(s, nodeId)!;
   const p = n.agentProfile;
-  const m: { runtime: string; model: string; chatModel?: string } = membersOf(nodeId).find((x) => x.runtime === 'chat') ?? { runtime: 'chat', model: 'chatgpt.com' };
+  // Mac bots without a chat member: open the subscription's own web chat (Claude unless the bot only uses Codex)
+  const m: { runtime: string; model: string; chatModel?: string } = membersOf(nodeId).find((x) => x.runtime === 'chat') ?? { runtime: 'chat', model: membersOf(nodeId).length && membersOf(nodeId).every((x) => x.runtime === 'codex') ? 'chatgpt.com' : 'claude.ai' };
   const o = optOf(m);
   const go = async (target: { app?: string; url?: string; dock?: boolean }) => {
     const r = await fetch('/api/open', { method: 'POST', body: JSON.stringify(target) }).catch(() => null);
@@ -782,6 +783,7 @@ function nodeMenuHtml(id: string, isBot: boolean) {
     return `<div class="form"><div class="grp">${tr('Reich von', 'Realm of')} ${esc(n.title)}</div><div class="hint">${tr(`Der Bot darf hier alles (Bash, Python, Code, PDFs, Web): eigener Knoten${kids ? ` + ${kids} Unterknoten` : ''} und die Arbeitsordner. Außerhalb fragt er seinen Chef (dg request), ganz oben dich im Cockpit.`, `The bot may do anything here (bash, Python, code, PDFs, web): its own node${kids ? ` + ${kids} sub-nodes` : ''} and the work folders. Outside, it asks its boss (dg request), at the very top you in the cockpit.`)}</div>
       ${inh.length ? `<div class="hint">${tr('Geerbt', 'Inherited')}: ${inh.map((x) => `<code>${esc(x.d)}</code> (${tr('von', 'from')} ${esc(x.from)})`).join(', ')}</div>` : ''}
       <div class="grp">${tr('Arbeitsordner – gelten für den ganzen Ast, einer pro Zeile', 'Work folders – apply to the whole branch, one per line')}</div><textarea id="reich-dirs" style="min-height:70px" placeholder="~/Projects/my-app">${esc((n.workDirs ?? []).join('\n'))}</textarea>
+      <div class="grp">${tr('Lesefreigaben – Knoten-IDs, deren Ordner dieser Ast lesen (nicht ändern) darf, durch Komma getrennt', 'Read grants – node ids whose folders this branch may read (not change), comma-separated')}</div><input id="reich-read" placeholder="sharon-spitz" value="${esc((n.readGrants ?? []).join(', '))}">
       <label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" id="reich-priv" ${n.private ? 'checked' : ''}> ${tr('privat – Bots außerhalb dieses Asts sehen und lesen ihn nicht', 'private – bots outside this branch cannot see or read it')}</label>
       <div class="row"><span class="sp"></span><button data-a="reich-save">${tr('Speichern', 'Save')}</button></div></div>`;
   }
@@ -859,7 +861,7 @@ function renderPop() {
       ${n.isBot ? modelMenuHtml(n.id) : ''}
       ${nodeMenuHtml(n.id, !!n.isBot)}
       ${childInput ? `<div class="row"><input id="child-title" placeholder="${tr('Name des Unterknotens ↵', 'Name of the sub-node ↵')}"></div>` : ''}
-      <div class="body">${n.remote ? mirrorHtml(n) : ''}<div class="mini" data-a="totop" title="${tr('Zur Kurzlage', 'To the short status')}">${miniLine(n.id)}</div>${linkAskHtml(n.id)}${todosHtml(n.id, !!n.isBot)}${detailsHtml(n)}</div>
+      <div class="body">${n.remote ? mirrorHtml(n) : ''}<div class="mini" data-a="totop" title="${tr('Zur Kurzlage', 'To the short status')}">${miniLine(n.id)}</div>${linkAskHtml(n.id)}${todosHtml(n.id, !!n.isBot)}${detailsHtml(n)}${archiveHtml(n)}</div>
       ${n.isBot || n.remote ? `<div class="foot"><div class="livebar" id="livebar" hidden></div><div class="row ask"><input id="prompt" placeholder="${n.remote ? tr(`Nachricht an den Bot bei ${esc(n.remote.origin)}…`, `Message to the bot at ${esc(n.remote.origin)}…`) : tr(`Mit ${esc(n.title)} sprechen…`, `Talk to ${esc(n.title)}…`)}" autocomplete="off"><span class="ic" data-a="mic" id="mic" title="${tr('Spracheingabe', 'Voice input')}">🎤</span><span class="ic send" data-a="send" title="${tr('Senden (Enter)', 'Send (Enter)')}">↑</span></div></div>`
         : chefOf(n.id) ? `<div class="foot"><div class="livebar" id="livebar" hidden></div><div class="row ask"><input id="prompt" placeholder="${tr(`Frage zu ${esc(n.title)} an ${esc(nodeById(s, chefOf(n.id)!)?.title)}…`, `Question about ${esc(n.title)} to ${esc(nodeById(s, chefOf(n.id)!)?.title)}…`)}" autocomplete="off"><span class="ic" data-a="mic" id="mic" title="${tr('Spracheingabe', 'Voice input')}">🎤</span><span class="ic send" data-a="send" title="${tr('Senden (Enter)', 'Send (Enter)')}">↑</span></div></div>` : ''}`;
     pop.classList.toggle('big', big && !minimized);
@@ -993,7 +995,8 @@ async function doAct(a: string, id: string) {
   refresh(true);
 }
 let ownerChat = false;
-function openCockpit() { renderCockpit(); $('cockpit').hidden = false; }
+function openCockpit() {
+  loadCleanup(); renderCockpit(); $('cockpit').hidden = false; }
 let cockpitSig = '';
 function renderCockpit() {
   const s = S();
@@ -1036,7 +1039,8 @@ function renderCockpit() {
   const ckBig = (() => { try { return localStorage.getItem('mind-ck-big') === '1'; } catch { return false; } })();
   const ckSize = (() => { try { const v = JSON.parse(localStorage.getItem('mind-ck-size') ?? 'null') as { w: number; h: number } | null; return v && v.w >= 300 && v.h >= 200 ? v : null; } catch { return null; } })();
   $('cockpit').innerHTML = `<div class="cwrap${ckBig ? ' big' : ckSize ? ' sized' : ''}" style="${!ckBig && ckSize ? `width:${ckSize.w}px;height:${ckSize.h}px` : ''}">
-    <div class="rtop"><h2>Cockpit</h2><span class="sp"></span>${ckSize && !ckBig ? `<span class="ic sm" data-c="resetsize" title="${tr('Größe zurücksetzen', 'Reset size')}">↺</span>` : ''}<span class="ic" data-c="big" title="${ckBig ? tr('Verkleinern', 'Make smaller') : tr('Groß ansehen', 'View large')}">${ckBig ? '⤡' : '⤢'}</span><span class="cbtn sm" data-c="mchat" title="${tr(`Chat mit deinem ${OWNER()}-Bot öffnen`, `Open chat with your ${OWNER()} bot`)}">Chat</span><span class="ic" data-c="close" title="${tr('Schließen (Esc)', 'Close (Esc)')}">×</span></div>
+    <div class="rtop"><h2>Cockpit</h2><span class="sp"></span><span class="cbtn" data-c="cleanup" title="${tr('Zusammenfassungen und Kurzlagen verdichten, Erledigtes schließen, Doppeltes zusammenführen – mit Vorschau', 'Condense summaries and short status, close finished items, merge duplicates – with preview')}">🧹 ${tr('Aufräumen', 'Tidy up')}</span>${ckSize && !ckBig ? `<span class="ic sm" data-c="resetsize" title="${tr('Größe zurücksetzen', 'Reset size')}">↺</span>` : ''}<span class="ic" data-c="big" title="${ckBig ? tr('Verkleinern', 'Make smaller') : tr('Groß ansehen', 'View large')}">${ckBig ? '⤡' : '⤢'}</span><span class="cbtn sm" data-c="mchat" title="${tr(`Chat mit deinem ${OWNER()}-Bot öffnen`, `Open chat with your ${OWNER()} bot`)}">Chat</span><span class="ic" data-c="close" title="${tr('Schließen (Esc)', 'Close (Esc)')}">×</span></div>
+    ${cleanReady() ? `<div class="csec"><div class="clabel">${tr('Aufräumen', 'Tidy up')} <b>${clean!.preview!.items.filter((x) => !(clean!.preview!.appliedIds ?? []).includes(x.id)).length}</b><span class="sp"></span><span class="cbtn" data-c="cleanup">${tr('Vorschau ansehen', 'View preview')}</span></div></div>` : ''}
     <div class="csec"><div class="clabel">${tr('Wo du gebraucht wirst', 'Where you are needed')} <b>${blockers.length}</b><span class="sp"></span><span class="cbtn" data-c="refresh-blockers" title="${tr('Alle Bots kurz fragen, ob sie dich brauchen', 'Briefly ask all bots whether they need you')}">${tr('Neu einholen', 'Collect again')}</span></div>
       ${blockers.length ? blockers.map(blkRow).join('') : `<div class="mut">${tr('Nichts blockiert – kein Bot braucht dich gerade.', 'Nothing blocked – no bot needs you right now.')}</div>`}</div>
     <div class="csec"><div class="clabel">${tr('Bei OK', 'On OK')} <b>${oks.length}</b><span class="sp"></span>${askOpen.size || ansOpen.size ? `<span class="cbtn" data-c="foldall" title="${tr('Alle Zeilen zurück in die Kleinansicht', 'All rows back to the compact view')}">${tr('Alle einklappen', 'Collapse all')}</span>` : ''}<span class="cbtn" data-c="fill" title="${tr('Bots ohne „Bei OK“ legen ihren nächsten Schritt fest (kurzer Lauf)', 'Bots without "On OK" decide their next step (short run)')}">${tr('Auffüllen', 'Fill up')}</span></div>
@@ -1106,6 +1110,7 @@ $('cockpit').addEventListener('click', async (ev) => {
     }
     case 'fill': { const r = await postJ('/api/ok-fill', { nodeId: root(S()) }); note(r.started.length ? tr(`${r.started.length} Bots legen ihr „Bei OK“ fest: ${r.started.map((x: string) => nodeById(S(), x)?.title).join(', ')}`, `${r.started.length} bots are setting their "On OK": ${r.started.map((x: string) => nodeById(S(), x)?.title).join(', ')}`) : tr('Alle Bots haben schon ein „Bei OK“ (oder arbeiten gerade).', 'All bots already have an "On OK" (or are working right now).')); refresh(true); break; }
     case 'refresh-blockers': doAct('blockers', root(S())); break;
+    case 'cleanup': $('cockpit').hidden = true; openCleanup(); break;
     case 'auto': doAct('auto', root(S())); break;
   }
 });
@@ -1266,6 +1271,56 @@ function connHtml() {
       : `<div class="mut">${conn.error ? esc(conn.error) : tr('Tunnel startet … (einige Sekunden)', 'Tunnel starting … (a few seconds)')}</div>`) : `<div class="mut">${tr('Aus: Mind ist nur auf diesem Mac erreichbar.', 'Off: Mind is only reachable on this Mac.')}</div>`}`;
 }
 
+// ───────── Aufräumen (cleanup with preview) ─────────
+type CleanFields = { summary: string; openPoints: string[]; todos: { pos: string[]; neg: string[] } | null };
+type CleanPreview = { at: string; status: string; done: number; total: number; items: { id: string; title: string; old: CleanFields; new: CleanFields; why: string }[]; errors: string[]; applied?: string; appliedIds?: string[] };
+let clean: { preview: CleanPreview | null; running: boolean; nightly: boolean } | null = null;
+const cleanOff = new Set<string>();
+let cleanTimer: ReturnType<typeof setTimeout> | null = null;
+function archiveHtml(n: GraphNode) {
+  if (!n.archive?.length) return '';
+  return `<details class="archive"><summary>${tr('Archiv', 'Archive')} (${n.archive.length})</summary>${n.archive.slice().reverse().map((a) => `<div class="arch"><i>${esc(new Date(a.at).toLocaleString(LOC(), { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }))}</i>${a.summary ? `<div>${md(a.summary)}</div>` : ''}${a.openPoints?.length ? `<div class="mut">${tr('Offene Punkte', 'Open points')}: ${a.openPoints.map(esc).join(' · ')}</div>` : ''}${a.todos ? `<div class="mut">${tr('Kurzlage', 'Short status')}: ${[...a.todos.pos.map((x) => '+' + x), ...a.todos.neg.map((x) => '−' + x)].map(esc).join(' · ')}</div>` : ''}</div>`).join('')}</details>`;
+}
+function cleanItemHtml(it: CleanPreview['items'][number]) {
+  const gone = it.old.openPoints.filter((x) => !it.new.openPoints.includes(x));
+  const added = it.new.openPoints.filter((x) => !it.old.openPoints.includes(x));
+  const sumChanged = it.old.summary !== it.new.summary;
+  return `<div class="cu-item${cleanOff.has(it.id) ? ' off' : ''}"><label class="row" style="gap:6px;cursor:pointer"><input type="checkbox" data-r="cu-tog" data-id="${esc(it.id)}" ${cleanOff.has(it.id) ? '' : 'checked'}> <b>${esc(it.title)}</b> <span class="mut">${esc(it.why)}</span></label>
+    ${sumChanged ? `<div class="cu-cols"><div><div class="mut">${tr('Vorher', 'Before')} (${it.old.summary.length} ${tr('Zeichen', 'chars')})</div><div class="cu-old">${esc(it.old.summary.slice(0, 600))}${it.old.summary.length > 600 ? ' …' : ''}</div></div><div><div class="mut">${tr('Nachher', 'After')} (${it.new.summary.length})</div><div class="cu-new">${md(it.new.summary)}</div></div></div>` : ''}
+    ${gone.length ? `<div class="mut">${tr('Offene Punkte → Archiv', 'Open points → archive')}: ${gone.map((x) => `<s>${esc(x)}</s>`).join(' · ')}</div>` : ''}
+    ${added.length ? `<div class="mut">${tr('Zusammengeführt', 'Merged')}: ${added.map(esc).join(' · ')}</div>` : ''}
+    ${JSON.stringify(it.old.todos) !== JSON.stringify(it.new.todos) && it.new.todos ? `<div class="mut">${tr('Kurzlage neu', 'New short status')}: ${[...it.new.todos.pos.map((x) => '+' + x), ...it.new.todos.neg.map((x) => '−' + x)].map(esc).join(' · ')}</div>` : ''}</div>`;
+}
+function cleanupHtml() {
+  const c = clean; const p = c?.preview;
+  const head = `<div class="rtop"><h2>${tr('Aufräumen', 'Tidy up')}</h2><span class="sp"></span><span class="ic" data-r="close" title="${tr('Schließen (Esc)', 'Close (Esc)')}">×</span></div>
+    <div class="mut">${tr('Verdichtet Zusammenfassungen und Kurzlagen zu Stichpunkten, schließt Erledigtes und führt Doppeltes zusammen. Nichts wird gelöscht: Altes kommt ins Archiv des Knotens. Geändert wird erst, wenn du bestätigst.', 'Condenses summaries and short status into bullet points, closes finished items and merges duplicates. Nothing is deleted: old content goes into the node archive. Nothing changes until you confirm.')}</div>
+    <label class="row" style="gap:6px;cursor:pointer;margin:8px 0"><input type="checkbox" data-r="cu-nightly" ${c?.nightly ? 'checked' : ''}> ${tr('Jede Nacht (3 Uhr) eine neue Vorschau vorbereiten – übernommen wird weiterhin nur nach deiner Bestätigung', 'Prepare a new preview every night (3 am) – still applied only after your confirmation')}</label>`;
+  if (!c) return `${head}<div class="mut">${tr('Lädt …', 'Loading …')}</div>`;
+  if (c.running || p?.status === 'läuft') return `${head}<div class="rsec"><b>${tr('Vorschau wird erstellt', 'Building preview')} … ${p ? `${p.done}/${p.total}` : ''}</b><div class="mut">${tr('Ein Modell liest die Knoten abschnittsweise und schlägt Änderungen vor. Das dauert einige Minuten.', 'A model reads the nodes section by section and proposes changes. This takes a few minutes.')}</div></div>`;
+  const start = `<button data-r="cu-start">${p ? tr('Neue Vorschau erstellen', 'Create new preview') : tr('Vorschau erstellen', 'Create preview')}</button>`;
+  if (!p) return `${head}<div class="rrow">${start}</div>`;
+  if (p.applied) return `${head}<div class="mut">${tr(`Zuletzt übernommen: ${new Date(p.applied).toLocaleString(LOC())}`, `Last applied: ${new Date(p.applied).toLocaleString(LOC())}`)}</div><div class="rrow">${start}</div>`;
+  const open = p.items.filter((x) => !(p.appliedIds ?? []).includes(x.id));
+  const on = open.filter((x) => !cleanOff.has(x.id)).length;
+  return `${head}<div class="rrow"><b>${tr(`${open.length} Knoten mit Vorschlägen`, `${open.length} nodes with proposals`)}${p.appliedIds?.length ? tr(` · ${p.appliedIds.length} übernommen`, ` · ${p.appliedIds.length} applied`) : ''}</b><span class="mut">${tr('Stand', 'as of')} ${esc(new Date(p.at).toLocaleString(LOC(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))}${p.errors.length ? ` · ${p.errors.length} ${tr('Abschnitte fehlgeschlagen', 'sections failed')}` : ''}</span><span class="sp"></span><b class="lnk" data-r="cu-all">${tr('alle', 'all')}</b> · <b class="lnk" data-r="cu-none">${tr('keine', 'none')}</b></div>
+    ${open.map(cleanItemHtml).join('') || `<div class="mut">${tr('Nichts aufzuräumen.', 'Nothing to tidy.')}</div>`}
+    <div class="rrow" style="position:sticky;bottom:0;background:var(--bg,#fafaf7);padding:8px 0">${start}<span class="sp"></span>${open.length ? `<button data-r="cu-apply">${tr(`${on} übernehmen`, `Apply ${on}`)}</button>` : ''}</div>`;
+}
+async function loadCleanup() {
+  try { clean = await (await fetch('/api/cleanup')).json(); } catch { clean = null; }
+  if ($('rules').dataset.mode === 'cleanup' && !$('rules').hidden) { const w = $('rules').querySelector('.rwrap'); if (w) w.innerHTML = cleanupHtml(); }
+  if (cleanTimer) clearTimeout(cleanTimer);
+  if (clean?.running || clean?.preview?.status === 'läuft') cleanTimer = setTimeout(loadCleanup, 4000);
+}
+const cleanReady = () => !!clean?.preview && clean.preview.status === 'fertig' && !clean.preview.applied && clean.preview.items.some((x) => !(clean!.preview!.appliedIds ?? []).includes(x.id));
+function openCleanup() {
+  $('rules').dataset.mode = 'cleanup';
+  $('rules').innerHTML = `<div class="rwrap">${cleanupHtml()}</div>`;
+  $('rules').hidden = false;
+  loadCleanup();
+}
+
 let shareInfo: { contacts: { id: string; name: string; online: boolean }[]; shares: { id: string; rootId: string; own: boolean; memberIds?: string[] }[] } | null = null;
 let shareErr = '';
 let linkOut = '';
@@ -1404,7 +1459,21 @@ $('rules').addEventListener('click', async (ev) => {
   const s = S();
   const id = t.dataset.id ?? '';
   switch (t.dataset.r) {
-    case 'close': $('rules').hidden = true; break;
+    case 'close': $('rules').hidden = true; delete $('rules').dataset.mode; break;
+    case 'cu-start': { cleanOff.clear(); clean = { ...(clean ?? { nightly: false, preview: null }), running: true }; const w = $('rules').querySelector('.rwrap'); if (w) w.innerHTML = cleanupHtml(); await fetch('/api/cleanup/start', { method: 'POST' }); loadCleanup(); break; }
+    case 'cu-tog': if ((t as HTMLInputElement).checked) cleanOff.delete(id); else cleanOff.add(id); { const w = $('rules').querySelector('.rwrap'); if (w) w.innerHTML = cleanupHtml(); } break;
+    case 'cu-all': cleanOff.clear(); { const w = $('rules').querySelector('.rwrap'); if (w) w.innerHTML = cleanupHtml(); } break;
+    case 'cu-none': clean?.preview?.items.forEach((x) => cleanOff.add(x.id)); { const w = $('rules').querySelector('.rwrap'); if (w) w.innerHTML = cleanupHtml(); } break;
+    case 'cu-nightly': s.cleanupNightly = (t as HTMLInputElement).checked || undefined; store.save(); if (clean) clean.nightly = !!s.cleanupNightly; note(s.cleanupNightly ? tr('Jede Nacht wird eine Vorschau vorbereitet.', 'A preview will be prepared every night.') : tr('Nächtliche Vorschau aus.', 'Nightly preview off.')); break;
+    case 'cu-apply': {
+      const ids = (clean?.preview?.items ?? []).filter((x) => !cleanOff.has(x.id) && !(clean?.preview?.appliedIds ?? []).includes(x.id)).map((x) => x.id);
+      if (!ids.length) { note(tr('Nichts ausgewählt.', 'Nothing selected.')); break; }
+      if (!confirm(tr(`${ids.length} Knoten aufräumen? Altes kommt ins Archiv des jeweiligen Knotens.`, `Tidy ${ids.length} nodes? Old content goes into each node's archive.`))) break;
+      await store.saveNow();
+      const r = await (await fetch('/api/cleanup/apply', { method: 'POST', body: JSON.stringify({ ids }) })).json();
+      note(tr(`${r.applied} Knoten aufgeräumt${r.skipped?.length ? ` · übersprungen (inzwischen geändert): ${r.skipped.join(', ')}` : ''}.`, `${r.applied} nodes tidied${r.skipped?.length ? ` · skipped (changed meanwhile): ${r.skipped.join(', ')}` : ''}.`));
+      await refresh(true); loadCleanup(); break;
+    }
     case 'reset': ($('r-uprompt') as HTMLTextAreaElement).value = defaultUpdatePrompt(); break;
     case 'save-prompt': {
       const v = ($('r-uprompt') as HTMLTextAreaElement).value.trim();
@@ -1765,6 +1834,7 @@ $('pop').addEventListener('click', async (ev) => {
     nodeMenu = null;
     note(tr('Alter Chat archiviert. ↗ öffnet jetzt einen neuen Chat, der sich Stand und Verlauf über den Connector holt.', 'Old chat archived. ↗ now opens a new chat that fetches state and history via the connector.'));
     commit(false);
+  } else if (a === 'cleanup') { openCleanup();
   } else if (a === 'sharewith' && sel.kind === 'node') {
     modelMenu = false; nodeMenu = 'share'; linkOut = ''; shareInfo = null; shareErr = ''; renderPop();
     try { const r = await (await fetch('/api/hub/contacts')).json(); shareInfo = r; shareErr = r.error ?? ''; if (r.error) shareInfo = null; } catch { shareErr = tr('Hub nicht erreichbar.', 'Hub not reachable.'); }
@@ -1795,6 +1865,9 @@ $('pop').addEventListener('click', async (ev) => {
     if (bad) { note(tr(`Pfad bitte absolut oder mit ~/ angeben: ${bad}`, `Please give the path as absolute or with ~/: ${bad}`)); return; }
     if (dirs.some((d) => /^~\/?$|^\/$|^\/Users\/[^/]+\/?$/.test(d)) && !confirm(tr('Ganzer Home-Ordner als Arbeitsordner – der Ast darf dann überall schreiben. Wirklich?', 'Entire home folder as work folder – the branch may then write anywhere. Really?'))) return;
     const priv = (document.getElementById('reich-priv') as HTMLInputElement).checked;
+    const reads = (document.getElementById('reich-read') as HTMLInputElement).value.split(',').map((x) => x.trim()).filter(Boolean);
+    const badRead = reads.find((x) => !nodeById(s, x)); if (badRead) { note(tr(`Knoten ${badRead} gibt es nicht.`, `Node ${badRead} does not exist.`)); return; }
+    if (reads.length) n.readGrants = reads; else delete n.readGrants;
     if (dirs.length) n.workDirs = dirs; else delete n.workDirs;
     if (priv) n.private = true; else delete n.private;
     touch(s, n.id, 'bot', tr(`Reich: ${dirs.length ? `Arbeitsordner ${dirs.join(', ')}` : 'keine eigenen Arbeitsordner'}${priv ? ' · privat' : ''}.`, `Realm: ${dirs.length ? `work folders ${dirs.join(', ')}` : 'no own work folders'}${priv ? ' · private' : ''}.`));

@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFileSync, existsSync, statSync, renameSync } from 'node:fs';
 import { readState, writeState, storeSourceFile, safeDataPath, writeTask, listReports, DATA_DIR } from './store.ts';
+import { readPreview, startPreview, applyPreview, startNightly, cleanupRunning } from './cleanup.ts';
+import { normalize as normalizeState } from '../core/io.ts';
+import { starterState as starterOf } from '../core/seed.ts';
 import { startHub, hubStatus, setHub, contacts, syncShares } from './hub.ts';
 import { NODES_DIR, startRun, dgCommand, runs, setApiBase, ensureBin, ensureTestBot, restoreInbox, chatPending, cancelRun, newSection, updateBot, discardPending, listNodeFiles, readNodeFile, nodeFilePath, okCascade, blockerSweep, fillOk, queued, autoStatus, setAuto, autoActive } from './bots.ts';
 import { spawn, execFileSync } from 'node:child_process';
@@ -88,6 +91,9 @@ export const handler = async (req: IncomingMessage, res: ServerResponse, next: (
       const r = await startRun({ nodeId: b.nodeId, text: b.text, from: OWNER_ID, threadId: b.threadId ?? null, edgeId: b.edgeId ?? null, depth: 0, via: b.via ?? 'text', about: b.about ?? null, brief: !!b.brief }, !!b.wait);
       return send(res, 200, r);
     }
+    if (url.pathname === '/api/cleanup' && req.method === 'GET') return send(res, 200, { preview: readPreview(), running: cleanupRunning(), nightly: !!normalizeState(readState() ?? starterOf()).cleanupNightly });
+    if (url.pathname === '/api/cleanup/start' && req.method === 'POST') return send(res, 200, { preview: startPreview() });
+    if (url.pathname === '/api/cleanup/apply' && req.method === 'POST') { const b = JSON.parse((await body(req)).toString('utf8')); return send(res, 200, applyPreview(Array.isArray(b.ids) ? b.ids : [])); }
     if (url.pathname === '/api/hub' && req.method === 'GET') return send(res, 200, hubStatus());
     if (url.pathname === '/api/hub/contacts' && req.method === 'GET') {
       try { return send(res, 200, { contacts: await contacts(), shares: hubStatus().shares }); } catch (e) { return send(res, 200, { contacts: [], shares: [], error: (e as Error).message }); }
@@ -180,6 +186,7 @@ export const isLocalHost = (host: unknown) => LOCAL_HOSTS.test(String(host ?? ''
 export function onListening(port: number) {
   migrateStoredOwner();
   startHub();
+  startNightly();
   setApiBase(`http://127.0.0.1:${port}`); serverPort = port;
   if (tunnelStatus().enabled) startTunnel(port);
   ensureBin(); ensureTestBot(); restoreInbox();

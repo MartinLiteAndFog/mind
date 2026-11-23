@@ -36,6 +36,12 @@ export interface GraphNode {
   blocker?: { text: string; at: ISO; by: string };
   /** Work folders (absolute or ~/…) in which the bots of this branch may work – apply to all child nodes. */
   workDirs?: string[];
+  /** Read grants: node ids whose folders the bots of this branch may read (not write). */
+  readGrants?: string[];
+  /** Long-term memory of a contact person in Zep (this node stands for the person). */
+  memory?: { name: string; since: ISO };
+  /** Archive: older content moved out by "Aufräumen" (never deleted). */
+  archive?: { at: ISO; by: string; summary?: string; openPoints?: string[]; todos?: { pos: string[]; neg: string[] } }[];
   /** Private branch: invisible to bots outside this branch (search, read, folders). */
   private?: boolean;
   /** Mirror of a branch another Mind shares with us (read-only, refreshed by the hub). */
@@ -229,6 +235,8 @@ export interface GraphState {
   lang?: 'de' | 'en';
   /** First-time setup completed (name, ground rules, zones). */
   setup?: { done: boolean; at: ISO };
+  /** Prepare a cleanup preview every night (applied only after confirmation). */
+  cleanupNightly?: boolean;
   /** The owner's OK budget per day for all bots together (bosses pass it on). */
   okPool?: number;
   /** Names of the circle planes (index = plane). */
